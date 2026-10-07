@@ -418,6 +418,7 @@ static const TalInstDesc TalInstructionTable[] = {
     {"listIn",		ASSEM_1BYTE,	INST_LIST_IN,		2,	1},
     {"listIndex",	ASSEM_1BYTE,	INST_LIST_INDEX,	2,	1},
     {"listIndexImm",	ASSEM_INDEX,	INST_LIST_INDEX_IMM,	1,	1},
+    {"listRange",	ASSEM_1BYTE,	INST_LIST_RANGE,	3,	1},
     {"listLength",	ASSEM_1BYTE,	INST_LIST_LENGTH,	1,	1},
     {"listNotIn",	ASSEM_1BYTE,	INST_LIST_NOT_IN,	2,	1},
     {"load",		ASSEM_LVT_N,	INST_LOAD_SCALAR,	0,	1},
