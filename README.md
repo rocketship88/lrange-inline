@@ -127,7 +127,7 @@ You need a Tcl source tree at commit `78dedf7` (or close to it).
 
 1. Compare your tree with the first commit here. Any difference shows where
    your tree has moved on. (A folder compare tool is the easiest way.)
-2. Copy the 8 files from the second commit over your tree.
+2. Copy the 8 files from the third commit over your tree (first 2 commits are the same, by accident).
 3. Build and test, from the `unix` directory of the Tcl tree:
 
 ```
