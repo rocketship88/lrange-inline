@@ -57,6 +57,10 @@ the same as for the command. When both indices are literals that
 `listRangeImm` can encode, nothing changes. Otherwise the compiler pushes the
 list, first and last, and emits `listRange`.
 
+With the following procedure, `proc demo {args e} { lrange $args 1 $e }` 
+you will see the below (simplfied) code change, and 
+can use `tcl::unsupported::disassemble proc demo` to see the real output.
+
 Before:
 
 ```
