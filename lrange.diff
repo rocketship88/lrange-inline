@@ -1,0 +1,385 @@
+Index: generic/tclAssembly.c
+==================================================================
+--- generic/tclAssembly.c	
++++ generic/tclAssembly.c	
+@@ -418,10 +418,11 @@
+     {"listIn",		ASSEM_1BYTE,	INST_LIST_IN,		2,	1},
+     {"listIndex",	ASSEM_1BYTE,	INST_LIST_INDEX,	2,	1},
+     {"listIndexImm",	ASSEM_INDEX,	INST_LIST_INDEX_IMM,	1,	1},
+     {"listLength",	ASSEM_1BYTE,	INST_LIST_LENGTH,	1,	1},
+     {"listNotIn",	ASSEM_1BYTE,	INST_LIST_NOT_IN,	2,	1},
++    {"listRange",	ASSEM_1BYTE,	INST_LIST_RANGE,	3,	1},
+     {"load",		ASSEM_LVT_N,	INST_LOAD_SCALAR,	0,	1},
+     {"loadArray",	ASSEM_LVT_N,	INST_LOAD_ARRAY,	1,	1},
+     {"loadArrayStk",	ASSEM_1BYTE,	INST_LOAD_ARRAY_STK,	2,	1},
+     {"loadStk",		ASSEM_1BYTE,	INST_LOAD_STK,		1,	1},
+     {"lsetFlat",	ASSEM_LSET_FLAT,INST_LSET_FLAT,		INT_MIN,1},
+
+Index: generic/tclCompCmdsGR.c
+==================================================================
+--- generic/tclCompCmdsGR.c	
++++ generic/tclCompCmdsGR.c	
+@@ -1348,36 +1348,43 @@
+ 				 * command. */
+     TCL_UNUSED(Command *),
+     CompileEnv *envPtr)		/* Holds the resulting instructions. */
+ {
+     DefineLineInformation;	/* TIP #280 */
+-    Tcl_Token *tokenPtr, *listTokenPtr;
++    Tcl_Token *firstTokenPtr, *lastTokenPtr, *listTokenPtr;
+     int idx1, idx2;
+ 
+     if (parsePtr->numWords != 4) {
+ 	return TCL_ERROR;
+     }
+     listTokenPtr = TokenAfter(parsePtr->tokenPtr);
+-
+-    tokenPtr = TokenAfter(listTokenPtr);
+-    if ((TclGetIndexFromToken(tokenPtr, TCL_INDEX_START, TCL_INDEX_NONE,
+-	    &idx1) != TCL_OK) || (idx1 == (int)TCL_INDEX_NONE)) {
+-	return TCL_ERROR;
+-    }
+-    /*
+-     * Token was an index value, and we treat all "first" indices
+-     * before the list same as the start of the list.
+-     */
+-
+-    tokenPtr = TokenAfter(tokenPtr);
+-    if (TclGetIndexFromToken(tokenPtr, TCL_INDEX_NONE, TCL_INDEX_END,
+-	    &idx2) != TCL_OK) {
+-	return TCL_ERROR;
+-    }
+-    /*
+-     * Token was an index value, and we treat all "last" indices
+-     * after the list same as the end of the list.
++    firstTokenPtr = TokenAfter(listTokenPtr);
++    lastTokenPtr = TokenAfter(firstTokenPtr);
++
++    if ((TclGetIndexFromToken(firstTokenPtr, TCL_INDEX_START,
++	    TCL_INDEX_NONE, &idx1) != TCL_OK) || (idx1 == (int)TCL_INDEX_NONE)
++	    || (TclGetIndexFromToken(lastTokenPtr, TCL_INDEX_NONE,
++	    TCL_INDEX_END, &idx2) != TCL_OK)) {
++	/*
++	 * At least one index is not a literal that can be encoded in the
++	 * instruction (a variable or other substitution, or something that
++	 * is not a valid literal index and so needs the run time error). Push
++	 * all three arguments and let the instruction do the same job as the
++	 * command, with the same error messages.
++	 */
++
++	PUSH_TOKEN(		listTokenPtr, 1);
++	PUSH_TOKEN(		firstTokenPtr, 2);
++	PUSH_TOKEN(		lastTokenPtr, 3);
++	OP(			LIST_RANGE);
++	return TCL_OK;
++    }
++
++    /*
++     * Both tokens were index values. We treat all "first" indices before the
++     * list same as the start of the list, and all "last" indices after the
++     * list same as the end of the list.
+      */
+ 
+     /*
+      * Issue instructions. It's not safe to skip doing the LIST_RANGE, as
+      * we've not proved that the 'list' argument is really a list. Not that it
+
+Index: generic/tclCompile.c
+==================================================================
+--- generic/tclCompile.c	
++++ generic/tclCompile.c	
+@@ -992,10 +992,17 @@
+ 	 * The stepIdx will be the index of the value of the opnd1'th variable
+ 	 * of the opnd0'th list of variables.
+ 	 * Stack: ... listObjs... iterTracker info =>
+ 	 *			... listObjs... iterTracker info stepIdx */
+ 
++    TCL_INSTRUCTION_ENTRY(
++	"listRange",		-2),
++	/* Implements [lrange] when either index is not known at compile
++	 * time; the indices are index values as accepted by [lrange], not
++	 * encoded as for listRangeImm.
++	 * Stack: ... list first last => ... [lrange list first last] */
++
+     {NULL, 0, 0, 0, {OPERAND_NONE}}
+ };
+ 
+ /*
+  * Prototypes for procedures defined later in this file:
+
+Index: generic/tclCompile.h
+==================================================================
+--- generic/tclCompile.h	
++++ generic/tclCompile.h	
+@@ -972,10 +972,11 @@
+     INST_TCLOO_NEXT_LIST,
+     INST_TCLOO_NEXT_CLASS_LIST,
+     INST_ARITH_SERIES,
+     INST_UPLEVEL,
+     INST_FOREACH_INDEX,
++    INST_LIST_RANGE,
+ 
+     /* The last opcode */
+     LAST_INST_OPCODE
+ };
+ 
+
+Index: generic/tclExecute.c
+==================================================================
+--- generic/tclExecute.c	
++++ generic/tclExecute.c	
+@@ -5350,10 +5350,44 @@
+ 	    goto gotError;
+ 	}
+ 
+ 	TRACE_APPEND_OBJ(objResultPtr);
+ 	NEXT_INST_F(9, 1, 1);
++
++    case INST_LIST_RANGE: {	/* lrange with objc==4 and at least one index
++				 * not known at compile time */
++	Tcl_Size listLen, first, last;
++
++	/*
++	 * Stack: ... list first last. Mirrors Tcl_LrangeObjCmd, including the
++	 * order in which arguments are validated, so that error messages are
++	 * the same as for the uncompiled command.
++	 */
++
++	valuePtr = OBJ_AT_DEPTH(2);
++	value2Ptr = OBJ_UNDER_TOS;
++	tmpPtr = OBJ_AT_TOS;
++	TRACE("\"%.30s\" \"%.30s\" \"%.30s\" => ",
++		O2S(valuePtr), O2S(value2Ptr), O2S(tmpPtr));
++
++	DECACHE_STACK_INFO();
++	if (TclListObjLength(interp, valuePtr, &listLen) != TCL_OK
++		|| TclGetIntForIndexM(interp, value2Ptr, listLen - 1,
++			&first) != TCL_OK
++		|| TclGetIntForIndexM(interp, tmpPtr, listLen - 1,
++			&last) != TCL_OK
++		|| Tcl_ListObjRange(interp, valuePtr, first, last,
++			&objResultPtr) != TCL_OK) {
++	    CACHE_STACK_INFO();
++	    TRACE_ERROR(interp);
++	    goto gotError;
++	}
++	CACHE_STACK_INFO();
++
++	TRACE_APPEND_OBJ(objResultPtr);
++	NEXT_INST_V(1, 3, 1);
++    }
+ 
+     case INST_LIST_IN:
+     case INST_LIST_NOT_IN:	/* Basic list containment operators. */
+ 	value2Ptr = OBJ_AT_TOS;
+ 	valuePtr = OBJ_UNDER_TOS;
+
+Index: tests/assemble.test
+==================================================================
+--- tests/assemble.test	
++++ tests/assemble.test	
+@@ -803,10 +803,48 @@
+     -body {
+ 	assemble { push x; nop; nop; nop}
+     }
+     -result x
+ }
++test assemble-7.47 {listRange} {
++    -body {
++	assemble {
++	    push {a b c d e}; push 1; push 3; listRange
++	}
++    }
++    -result {b c d}
++}
++test assemble-7.48 {listRange - end-relative and out of range indices} {
++    -body {
++	assemble {
++	    push {a b c d e}; push 2; push end-1; listRange
++	    push {a b c d e}; push -5; push 100; listRange
++	    push {a b c d e}; push 3; push 1; listRange
++	    list 3
++	}
++    }
++    -result {{c d} {a b c d e} {}}
++}
++test assemble-7.49 {listRange - bad index} {
++    -body {
++	assemble {
++	    push {a b c d e}; push rubbish; push 3; listRange
++	}
++    }
++    -returnCodes error
++    -match glob
++    -result {bad index "rubbish"*}
++}
++test assemble-7.50 {listRange - not a list} {
++    -body {
++	assemble {
++	    push "a \{ b"; push 0; push 1; listRange
++	}
++    }
++    -returnCodes error
++    -result {unmatched open brace in list}
++}
+ 
+ # assemble-8 ASSEM_LVT and FindLocalVar
+ 
+ test assemble-8.1 {load, wrong # args} {
+     -body {
+
+Index: tests/compile.test
+==================================================================
+--- tests/compile.test	
++++ tests/compile.test	
+@@ -1110,10 +1110,48 @@
+ 	    lappend result c
+ 	}
+ 	return $result
+     }} P Q R S T
+ } {1 2 3 4 5 6 7 8 9 10}
++
++test compile-22.1 {lrange with non-literal index compiles to listRange} -body {
++    proc lrcomp {l i j} {lrange $l $i $j}
++    tcl::unsupported::disassemble proc lrcomp
++} -cleanup {
++    rename lrcomp {}
++} -match glob -result {*listRange *}
++test compile-22.2 {lrange with non-literal index does not call the command} -body {
++    proc lrcomp {l i j} {lrange $l $i $j}
++    string match *invokeStk* [tcl::unsupported::disassemble proc lrcomp]
++} -cleanup {
++    rename lrcomp {}
++} -result 0
++test compile-22.3 {lrange with literal indices still uses listRangeImm} -body {
++    proc lrcomp {l} {lrange $l 1 end-1}
++    tcl::unsupported::disassemble proc lrcomp
++} -cleanup {
++    rename lrcomp {}
++} -match glob -result {*listRangeImm 1 end-1*}
++test compile-22.4 {listRange is described by getbytecode} -body {
++    proc lrcomp {l i j} {lrange $l $i $j}
++    set insts [dict get [tcl::unsupported::getbytecode proc lrcomp] instructions]
++    lmap {pc inst} $insts {lindex $inst 0}
++} -cleanup {
++    rename lrcomp {}
++} -result {loadScalar loadScalar loadScalar listRange done}
++test compile-22.5 {listRange from assembled code is described by getbytecode} -body {
++    proc lrcomp {} {
++	tcl::unsupported::assemble {
++	    push {a b c d}; push 1; push end; listRange
++	}
++    }
++    lrcomp
++    set insts [dict get [tcl::unsupported::getbytecode proc lrcomp] instructions]
++    lmap {pc inst} $insts {lindex $inst 0}
++} -cleanup {
++    rename lrcomp {}
++} -result {push push push listRange done}
+ 
+ # TODO sometime - check that bytecode from tbcload is *not* disassembled.
+ 
+ # cleanup
+ catch {rename p ""}
+
+Index: tests/lrange.test
+==================================================================
+--- tests/lrange.test	
++++ tests/lrange.test	
+@@ -242,10 +242,95 @@
+ 	    }
+ 	}
+     }
+ }}
+ 
++# Tests for [lrange] where an index is not a literal known at compile time.
++# These are compiled to the listRange instruction and must behave exactly as
++# the command does (including error messages).
++test lrange-6.1 {lrange with variable indices} -body {
++    apply {{l a b} {lrange $l $a $b}} {a b c d e} 1 3
++} -result {b c d}
++test lrange-6.2 {lrange with variable last index} -body {
++    apply {{l b} {lrange $l 1 $b}} {a b c d e} end-1
++} -result {b c d}
++test lrange-6.3 {lrange with variable first index} -body {
++    apply {{l a} {lrange $l $a end}} {a b c d e} 2
++} -result {c d e}
++test lrange-6.4 {lrange with end-$n} -body {
++    apply {{l n} {lrange $l 1 end-$n}} {a b c d e} 2
++} -result {b c}
++test lrange-6.5 {lrange with variable indices: result is independent} -body {
++    apply {{i j} {
++	set l [list a b c d]
++	set r [lrange $l $i $j]
++	lappend r X
++	list $l $r
++    }} 1 2
++} -result {{a b c d} {b c X}}
++test lrange-6.6 {lrange with variable indices: not a list} -body {
++    apply {{l i j} {lrange $l $i $j}} "a \{ b" 0 1
++} -returnCodes error -result {unmatched open brace in list}
++test lrange-6.7 {lrange with variable indices: list is checked first} -body {
++    apply {{l i j} {lrange $l $i $j}} "a \{ b" foo 1
++} -returnCodes error -result {unmatched open brace in list}
++test lrange-6.8 {lrange with variable indices: bad first index} -body {
++    apply {{l i j} {lrange $l $i $j}} {a b c} foo 1
++} -returnCodes error -result {bad index "foo": must be integer?[+-]integer? or end?[+-]integer?}
++test lrange-6.9 {lrange with variable indices: bad last index} -body {
++    apply {{l i j} {lrange $l $i $j}} {a b c} 0 bar
++} -returnCodes error -result {bad index "bar": must be integer?[+-]integer? or end?[+-]integer?}
++test lrange-6.10 {lrange: literal invalid index is still a run time error} -body {
++    apply {{l} {lrange $l 0 rubbish}} {a b c}
++} -returnCodes error -result {bad index "rubbish": must be integer?[+-]integer? or end?[+-]integer?}
++test lrange-6.11 {lrange with variable indices: wrong # args} -body {
++    apply {{l i} {lrange $l $i}} {a b c} 1
++} -returnCodes error -result {wrong # args: should be "lrange list first last"}
++test lrange-6.12 {lrange with variable indices: redefinition is honoured} -setup {
++    namespace eval lrtest {
++	proc t {l i j} {lrange $l $i $j}
++    }
++    lrtest::t {a b c} 0 1
++} -body {
++    namespace eval lrtest {
++	proc lrange args {return redefined}
++    }
++    lrtest::t {a b c} 0 1
++} -cleanup {
++    namespace delete lrtest
++} -result redefined
++test lrange-6.13 {lrange with variable indices: compiled matches command} -body {
++    apply {{} {
++	set lss {{} {a} {a b c} {a b c d} "a {b c} d" "a \{ b"}
++	set idxs {-2 -1 0 1 2 3 end-3 end-2 end-1 end end+1 end+2 foo {} end- 1.5
++	    0x1 +1 end--1 10000000000000000000}
++	set lrange lrange
++	set bad {}
++	foreach l $lss {
++	    foreach a $idxs {
++		foreach b $idxs {
++		    set c1 [catch {lrange $l $a $b} r1]
++		    set c2 [catch {$lrange $l $a $b} r2]
++		    if {$c1 != $c2 || $r1 ne $r2} {
++			lappend bad [list $l $a $b $c1 $r1 $c2 $r2]
++		    }
++		}
++	    }
++	}
++	set bad
++    }}
++} -result {}
++test lrange-6.14 {lrange with variable indices: used inside expressions and loops} -body {
++    apply {{l} {
++	set out {}
++	for {set i 0} {$i < [llength $l]} {incr i} {
++	    lappend out [lrange $l $i [expr {$i + 1}]]
++	}
++	set out
++    }} {a b c}
++} -result {{a b} {b c} c}
++
+ # cleanup
+ ::tcltest::cleanupTests
+ return
+ 
+ # Local Variables:
+
