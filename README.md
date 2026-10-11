@@ -1,6 +1,12 @@
 # lrange-inline
 
+
+
 An experiment: compile `[lrange]` inline when an index is **not** a literal.
+
+(note: also now includes a diff to change this to a single opcode form)
+
+(note: also storing new fast path invokeStk here since these are related)
 
 Tcl already compiles `lrange $l 1 3` to a single instruction (`listRangeImm`).
 But `lrange $l $i $j`, `lrange $l $i end` and `lrange $l 1 end-$n` fall back to
