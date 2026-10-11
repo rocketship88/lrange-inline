@@ -1,0 +1,311 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Tcl Trampoline Stepper</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: three side-by-side panes (bytecode, value stack, NR record stack) under a mode switch and step controls; explanation caption below; reference notes at the end. */
+:root {
+  --bg: #f3f5f6;
+  --panel: #ffffff;
+  --fg: #1c2528;
+  --muted: #5d6b70;
+  --line: #d3dade;
+  --accent: #0b6e7a;
+  --accent-fg: #ffffff;
+  --hot: #b3261e;
+  --r-tebc: #dbe8fb;  --r-tebc-b: #3b6cc4;
+  --r-nrc: #fbe9c8;   --r-nrc-b: #b9770e;
+  --r-eoc: #e8def8;   --r-eoc-b: #7048b8;
+  --r-disp: #d6efdc;  --r-disp-b: #2f8a4a;
+  --r-base: #eceff1;  --r-base-b: #aab4b8;
+  --pc: #fff3c4;
+  --font: "Source Sans 3", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12191b; --panel: #1b2427; --fg: #e3eaec; --muted: #94a3a8; --line: #33434a;
+  --accent: #4fc3d0; --accent-fg: #0a1a1d; --hot: #ff8a80;
+  --r-tebc: #1d3354; --r-tebc-b: #6f9de6;
+  --r-nrc: #4a3510; --r-nrc-b: #e5a53d;
+  --r-eoc: #35285a; --r-eoc-b: #a98be6;
+  --r-disp: #1b3d27; --r-disp-b: #62c27d;
+  --r-base: #263135; --r-base-b: #55666c;
+  --pc: #4a4318; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #12191b; --panel: #1b2427; --fg: #e3eaec; --muted: #94a3a8; --line: #33434a;
+  --accent: #4fc3d0; --accent-fg: #0a1a1d; --hot: #ff8a80;
+  --r-tebc: #1d3354; --r-tebc-b: #6f9de6;
+  --r-nrc: #4a3510; --r-nrc-b: #e5a53d;
+  --r-eoc: #35285a; --r-eoc-b: #a98be6;
+  --r-disp: #1b3d27; --r-disp-b: #62c27d;
+  --r-base: #263135; --r-base-b: #55666c;
+  --pc: #4a4318; color-scheme: dark; }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 16px; line-height: 1.5;
+  padding-inline: 16px; padding-block: 20px 40px; }
+main { max-width: 980px; margin-inline: auto; display: flex; flex-direction: column; gap: 20px; }
+h1 { font-size: 1.6rem; line-height: 1.2; margin: 0; text-wrap: balance; }
+h2 { font-size: 1.1rem; margin: 0 0 8px; }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 68ch; margin-top: 6px; }
+code, .mono { font-family: var(--mono); font-size: .88em; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel); }
+.seg button { border: 0; background: transparent; color: var(--fg); font: inherit; padding: 8px 14px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.ctl { display: flex; gap: 8px; flex-wrap: wrap; }
+.ctl button { font: inherit; padding: 8px 14px; border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+  border-radius: 6px; cursor: pointer; }
+.ctl button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+.ctl button:disabled { opacity: .4; cursor: default; }
+button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.steps { display: flex; gap: 4px; flex-wrap: wrap; }
+.steps i { width: 18px; height: 6px; border-radius: 3px; background: var(--line); }
+.steps i.done { background: var(--accent); opacity: .55; }
+.steps i.cur { background: var(--accent); opacity: 1; }
+
+.panes { display: grid; grid-template-columns: 1.1fr 1fr 1.3fr; gap: 14px; align-items: start; }
+@media (max-width: 760px) { .panes { grid-template-columns: 1fr; } }
+.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+.pane h2 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.pane h2 small { font-weight: 400; color: var(--muted); font-size: .78rem; }
+
+.code { font-family: var(--mono); font-size: .86rem; display: flex; flex-direction: column; gap: 2px; }
+.code div { padding: 4px 8px; border-radius: 4px; display: flex; gap: 10px; border: 1px solid transparent; overflow-wrap: anywhere; }
+.code .n { color: var(--muted); width: 1.2em; flex: none; }
+.code .on { background: var(--pc); border-color: var(--r-nrc-b); font-weight: 600; }
+.suspended { margin-top: 8px; font-size: .85rem; color: var(--hot); font-weight: 600; min-height: 1.3em; }
+
+.stack { display: flex; flex-direction: column-reverse; gap: 4px; min-height: 120px; justify-content: flex-start; }
+.cell { border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; font-family: var(--mono); font-size: .86rem; background: var(--bg); }
+.empty { color: var(--muted); font-size: .85rem; text-align: center; padding: 14px 0; border: 1px dashed var(--line); border-radius: 4px; }
+
+.rec { border: 1.5px solid; border-radius: 5px; padding: 6px 9px; font-family: var(--mono); font-size: .84rem; }
+.rec small { display: block; font-family: var(--font); font-size: .74rem; opacity: .85; }
+.rec.tebc { background: var(--r-tebc); border-color: var(--r-tebc-b); }
+.rec.nrc  { background: var(--r-nrc);  border-color: var(--r-nrc-b); }
+.rec.eoc  { background: var(--r-eoc);  border-color: var(--r-eoc-b); }
+.rec.disp { background: var(--r-disp); border-color: var(--r-disp-b); }
+.rec.base { background: var(--r-base); border-color: var(--r-base-b); border-style: dashed; color: var(--muted); }
+.rec.fresh { animation: drop .35s ease-out; }
+@keyframes drop { from { transform: translateY(-14px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .rec.fresh { animation: none; } }
+.topmark { font-size: .75rem; color: var(--muted); text-align: center; margin-bottom: 4px; }
+.running { margin-top: 10px; font-size: .85rem; border-top: 1px solid var(--line); padding-top: 8px; min-height: 2.6em; }
+.running b { font-family: var(--mono); font-weight: 600; }
+
+.tally { display: flex; gap: 18px; flex-wrap: wrap; font-size: .95rem; }
+.tally b { font-family: var(--mono); font-size: 1.15rem; }
+.tally .hot b { color: var(--hot); }
+
+.caption { background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--accent); border-radius: 6px; padding: 14px 16px; }
+.caption h2 { margin-bottom: 4px; }
+.caption p { max-width: 74ch; }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+.cols > section { min-width: 0; }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; }
+ul { margin: 6px 0 0; padding-left: 1.2em; }
+li { margin-bottom: 4px; }
+.fine { color: var(--muted); font-size: .85rem; }
+</style>
+
+<main>
+  <header>
+    <h1>Tcl Trampoline Stepper</h1>
+    <p class="lede">Follow one command call, <code>tcl::mathfunc::abs $x</code> inside a proc, through the bytecode executor. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
+  </header>
+
+  <div class="bar">
+    <div class="seg" role="group" aria-label="Mode">
+      <button id="m-stock" aria-pressed="true">Stock Tcl</button>
+      <button id="m-fast" aria-pressed="false">Fast leaf</button>
+    </div>
+    <div class="ctl">
+      <button id="b-reset">Reset</button>
+      <button id="b-prev">Back</button>
+      <button id="b-next" class="primary">Next step</button>
+      <button id="b-play">Auto-play</button>
+    </div>
+  </div>
+  <div class="steps" id="dots" aria-hidden="true"></div>
+
+  <div class="panes">
+    <section class="pane">
+      <h2>Bytecode <small>proc body</small></h2>
+      <div class="code" id="code"></div>
+      <div class="suspended" id="susp"></div>
+    </section>
+    <section class="pane">
+      <h2>Value stack <small>Tcl objects</small></h2>
+      <div class="stack" id="vs"></div>
+    </section>
+    <section class="pane">
+      <h2>Trampoline stack <small>callback records</small></h2>
+      <div class="topmark">top, popped next</div>
+      <div class="stack" id="nr"></div>
+      <div class="running" id="running"></div>
+    </section>
+  </div>
+
+  <div class="tally" id="tally"></div>
+
+  <div class="caption" aria-live="polite">
+    <h2 id="cap-h"></h2>
+    <p id="cap-p"></p>
+  </div>
+
+  <div class="cols">
+    <section>
+      <h2>Which opcodes use the trampoline</h2>
+      <p class="fine">Found by searching <code>tclExecute.c</code> for the yield macro. Seven opcode handlers return to the trampoline; everything else runs straight through inside the executor.</p>
+      <div class="tbl"><table>
+        <tr><th>Opcode</th><th>What it does</th></tr>
+        <tr><td><code>invokeStk1</code> / <code>invokeStk</code></td><td>Call a command by words on the stack</td></tr>
+        <tr><td><code>invokeReplace</code></td><td>Same, with a replaced command word</td></tr>
+        <tr><td><code>evalStk</code></td><td><code>eval</code> of a script value</td></tr>
+        <tr><td><code>exprStk</code></td><td><code>expr</code> of a non-constant expression</td></tr>
+        <tr><td><code>uplevel</code></td><td>Run a script in another frame</td></tr>
+        <tr><td><code>yieldToInvoke</code></td><td>Coroutine yield and invoke</td></tr>
+        <tr><td><code>tclooNext</code></td><td><code>next</code> and <code>nextto</code> in TclOO</td></tr>
+      </table></div>
+      <p class="fine" style="margin-top:8px">Opcodes such as <code>push</code>, <code>loadScalar</code>, <code>storeScalar</code>, <code>add</code>, jumps and the inlined <code>lrange</code> never touch it. The prototype changes only <code>invokeStk</code>.</p>
+    </section>
+    <section>
+      <h2>What a record is</h2>
+      <p>The stack holds callback records, not instructions. Each record is a function pointer plus four data words (<code>NRE_callback</code>). The trampoline loop in <code>TclNRRunCallbacks</code> pops the top record, calls its function, and repeats until the stack is back to where it started.</p>
+      <ul>
+        <li><b>TEBCresume</b> saves the executor: its data block, the pc to resume at, and the cleanup count.</li>
+        <li><b>NRCommand</b> runs after the command: level count, async, cancel and limit checks.</li>
+        <li><b>EvalObjvCore</b> finds the command, runs trace checks, then schedules Dispatch.</li>
+        <li><b>Dispatch</b> calls the command's C function with <code>objc</code> and <code>objv</code>.</li>
+      </ul>
+      <p class="fine" style="margin-top:8px">Simplified: cross-checks such as traces, limits, rewrites and deferred callbacks are collapsed into one line each. The order of pushes and pops follows <code>tclBasic.c</code> and <code>tclExecute.c</code>.</p>
+    </section>
+  </div>
+</main>
+
+<script>
+(function () {
+  var CODE = [
+    'push1 "tcl::mathfunc::abs"',
+    'loadScalar1 x',
+    'invokeStk1 2',
+    'storeScalar1 y',
+    'pop',
+    'done'
+  ];
+  var BASE = {k: 'base', t: "caller's records", s: 'below, untouched'};
+  var TEBC = {k: 'tebc', t: 'TEBCresume', s: 'saved executor, resume at pc 3'};
+  var NRC  = {k: 'nrc',  t: 'NRCommand',  s: 'after-command checks'};
+  var EOC  = {k: 'eoc',  t: 'EvalObjvCore', s: 'look up command, check traces'};
+  var DISP = {k: 'disp', t: 'Dispatch',   s: 'call the C function'};
+  var CMD = '"tcl::mathfunc::abs"';
+
+  function S(pc, vs, nr, h, p, extra) {
+    var o = {pc: pc, vs: vs, nr: nr, h: h, p: p, push: 0, pop: 0};
+    for (var k in extra) o[k] = extra[k];
+    return o;
+  }
+  var head = [
+    S(0, [], [], 'Executor is running',
+      'The proc body is bytecode, run by one big function (TEBCresume). Below it on the trampoline stack are the records of whatever called this proc. Nothing of ours is on the stack yet.'),
+    S(1, [CMD], [], 'push1',
+      'The command name goes on the value stack as a constant. No trampoline involvement: the executor just advances.'),
+    S(2, [CMD, '-5'], [], 'loadScalar1 x',
+      'The variable x (value -5) is pushed as the argument. The next instruction calls the command with these two words.')
+  ];
+  var tail = [
+    S(4, ['5'], [], 'storeScalar1 y',
+      'y is set to 5. The value stays on the stack, as it does for every store.'),
+    S(5, [], [], 'pop and done',
+      'The leftover value is discarded and the proc continues. Same end state in both modes.')
+  ];
+  var stock = head.concat([
+    S(2, [CMD, '-5'], [TEBC], 'invokeStk1: yield',
+      'The executor cannot call a command directly, since a command might be a proc that needs its own bytecode frame. So it saves itself: one TEBCresume record goes on the trampoline stack, remembering the pc.',
+      {push: 1, running: 'executor'}),
+    S(2, [CMD, '-5'], [TEBC, NRC, EOC], 'TclNREvalObjv schedules the call',
+      'Two more records are pushed: NRCommand (to run last) and EvalObjvCore (to run first). Then the executor function returns to the trampoline loop. The bytecode is now suspended.',
+      {push: 2, suspended: true, running: 'executor, returning'}),
+    S(2, [CMD, '-5'], [TEBC, NRC, DISP], 'Pop EvalObjvCore',
+      'The loop pops EvalObjvCore. It looks the command up by name, runs the trace and rewrite checks, and pushes a Dispatch record.',
+      {push: 1, pop: 1, suspended: true, running: 'EvalObjvCore'}),
+    S(2, [CMD, '-5'], [TEBC, NRC], 'Pop Dispatch: the real work',
+      'The loop pops Dispatch, which calls the C function for abs. This is the only step that computes anything. The result goes into the interpreter result.',
+      {pop: 1, suspended: true, running: 'Dispatch, calls abs(-5)'}),
+    S(2, [CMD, '-5'], [TEBC], 'Pop NRCommand',
+      'After-command checks: decrement the level count, test for async handlers, cancellation and limits.',
+      {pop: 1, suspended: true, running: 'NRCommand'}),
+    S(3, ['5'], [], 'Pop TEBCresume: back in the bytecode',
+      'The executor is re-entered at the saved pc. It takes the result, drops the two argument words and pushes the result. The trampoline stack is empty again.',
+      {pop: 1, running: 'TEBCresume, executor again'})
+  ]).concat(tail);
+  var fast = head.concat([
+    S(2, [CMD, '-5'], [], 'invokeStk1: look up and check',
+      'The prototype looks the command up and checks it is flagged as a fast leaf. It then runs the same guards the normal route would reach: traces, limits, cancellation, async handlers, rewrites. Any guard that fails falls back to the stock sequence. Nothing is pushed.',
+      {running: 'executor'}),
+    S(2, [CMD, '-5'], [], 'Call the C function directly',
+      'The executor calls the abs function itself, from inside the same instruction. No records, no return to the trampoline, no suspended bytecode.',
+      {running: 'executor, calls abs(-5)'}),
+    S(3, ['5'], [], 'Push the result and carry on',
+      'The result replaces the two argument words. The prototype sets the interrupt counter so limit checks still run, then jumps straight back into the dispatch loop.',
+      {running: 'executor'})
+  ]).concat(tail);
+
+  var MODES = {stock: stock, fast: fast};
+  var mode = 'stock', i = 0, timer = null;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function recHtml(r, fresh) {
+    return '<div class="rec ' + r.k + (fresh ? ' fresh' : '') + '">' + r.t + '<small>' + r.s + '</small></div>';
+  }
+  function render() {
+    var steps = MODES[mode], s = steps[i];
+    $('code').innerHTML = CODE.map(function (c, n) {
+      return '<div class="' + (n === s.pc && !s.suspended ? 'on' : '') + '"><span class="n">' + n + '</span><span>' + c.replace(/</g, '&lt;') + '</span></div>';
+    }).join('');
+    $('susp').textContent = s.suspended ? 'Suspended: the executor has returned to the trampoline.' : '';
+    $('vs').innerHTML = s.vs.length ? s.vs.map(function (v) { return '<div class="cell">' + v + '</div>'; }).join('')
+      : '<div class="empty">empty</div>';
+    var prev = i > 0 ? steps[i - 1].nr.length : 0;
+    var html = s.nr.map(function (r, n) { return recHtml(r, n >= prev && s.push > 0 && n >= s.nr.length - s.push); }).join('');
+    html = recHtml(BASE) + html;
+    $('nr').innerHTML = html;
+    $('running').innerHTML = s.running ? 'Running now: <b>' + s.running + '</b>' : '';
+    var pushed = 0, popped = 0;
+    for (var k = 0; k <= i; k++) { pushed += steps[k].push; popped += steps[k].pop; }
+    $('tally').innerHTML = '<span class="' + (pushed ? 'hot' : '') + '">Records pushed: <b>' + pushed + '</b></span><span>Records popped: <b>' + popped + '</b></span><span>Steps: <b>' + (i + 1) + ' of ' + steps.length + '</b></span>';
+    $('cap-h').textContent = s.h;
+    $('cap-p').textContent = s.p;
+    $('dots').innerHTML = steps.map(function (_, n) { return '<i class="' + (n < i ? 'done' : n === i ? 'cur' : '') + '"></i>'; }).join('');
+    $('b-prev').disabled = i === 0;
+    $('b-next').disabled = i === steps.length - 1;
+    $('m-stock').setAttribute('aria-pressed', mode === 'stock');
+    $('m-fast').setAttribute('aria-pressed', mode === 'fast');
+    if (i === steps.length - 1) stop();
+  }
+  function stop() { if (timer) { clearInterval(timer); timer = null; $('b-play').textContent = 'Auto-play'; } }
+  function setMode(m) { stop(); mode = m; i = Math.min(i, MODES[m].length - 1); render(); }
+  $('m-stock').onclick = function () { setMode('stock'); };
+  $('m-fast').onclick = function () { setMode('fast'); };
+  $('b-next').onclick = function () { stop(); if (i < MODES[mode].length - 1) { i++; render(); } };
+  $('b-prev').onclick = function () { stop(); if (i > 0) { i--; render(); } };
+  $('b-reset').onclick = function () { stop(); i = 0; render(); };
+  $('b-play').onclick = function () {
+    if (timer) { stop(); return; }
+    if (i === MODES[mode].length - 1) i = 0;
+    $('b-play').textContent = 'Pause';
+    render();
+    timer = setInterval(function () { if (i < MODES[mode].length - 1) { i++; render(); } else stop(); }, 1600);
+  };
+  render();
+})();
+</script>
+
+</body></html>
