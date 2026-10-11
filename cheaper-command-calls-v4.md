@@ -1,6 +1,6 @@
 # Cheaper command calls for built-in leaf commands
 
-Oct 9, 2026 · @ET
+Oct 10, 2026 · @ET
 
 A call to a built-in math function such as abs, which is a plain C command in `::tcl::mathfunc` (but not a user-defined proc in that namespace), costs about 861 instructions in Tcl trunk, and roughly 320 of those are call machinery that does nothing for a command that cannot recurse. This note proposes a guarded fast path for audited leaf commands, and a dedicated math-function instruction as a later step.
 
@@ -80,12 +80,12 @@ Done so far: this write-up and design; the prototype (about 150 added lines in `
 
 These are exact callgrind counts per call, loop overhead subtracted, measured with `expr` inside a proc loop. They include the small amount of work around the call, so they are not directly comparable with the 861 above, which counts only the TAL call sequence.
 
-In wall-clock time, `abs` and `int` fall from about 144 ns to about 121 ns per iteration. Unflagged calls look about 1–2% slower in wall time (`floor` about 149–157 ns before, 153–158 ns after; a proc call about 224 ns before, 228 ns after), although their instruction counts are unchanged. The cause is not established. A code-layout effect in the very large executor function is the likely one: the empty loop alone moved by about 4% between builds with no relevant change. A control build with the fast path present but no command flagged would settle it.
+In wall-clock time, `abs` and `int` fall from about 144 ns to about 121 ns per iteration. On the early three-function build, unflagged calls looked about 1–2% slower in wall time (`floor` about 149–157 ns before, 153–158 ns after; a proc call about 224 ns before, 228 ns after), although their instruction counts were unchanged. On the final 58-function build, re-measured on two other machines (see the table below), `proc` and `lsearch` show no consistent change, while the empty loop alone is 5–7% slower. The cause is not established. A code-layout effect in the very large executor function is the likely one, since the empty loop moved with no relevant change to it. A control build with the fast path present but no command flagged would settle it.
 
 Correctness checks:
 
 - The official test suite gives the same result as the unmodified tree: 509262 tests, 502746 passed, 6508 skipped, 8 failed, all in `httpProxy.test`.
-- A 453-line behaviour transcript is identical between stock and prototype. It covers redefining, renaming and deleting the commands, execution traces, command and time limits, cancel, recursion limits, namespaces, import and alias, safe interps with hidden commands, coroutines, argument expansion, and the full error details (`-errorinfo`, `-errorline`, `-errorstack`).
+- A 465-result behaviour transcript is identical between stock and prototype. It covers redefining, renaming and deleting the commands, execution traces, command and time limits, cancel, recursion limits, namespaces, import and alias, safe interps with hidden commands, coroutines, argument expansion, and the full error details (`-errorinfo`, `-errorline`, `-errorstack`).
 - The transcript runs clean under valgrind memcheck.
 - Callgrind confirms the fast path is taken for a plain call and declined when an execution trace is present or the command has been redefined.
 
@@ -94,13 +94,42 @@ The tests found one real difference. The executor runs its async, cancel and lim
 **Extended to all 58 built-in math functions.** Reading every function in the `::tcl::mathfunc` table and its helpers found no script evaluation and no NR callbacks, so the prototype now flags all 58 when they are registered. The conversions they use on their arguments are the same ones the compiled `add` and `lt` instructions already run in-line, so this adds no new kind of exposure.
 
 - A comparison against stock Tcl over every function and 47,734 argument lists (0–3 arguments, called directly and inside `expr`, comparing the return code, result and full error details) is identical.
-- A scenario comparison for 30 functions (execution traces, redefine, rename, delete, alias, coroutine, tailcall, command and time limits, cancel, recursion limit) is identical.
+- A scenario comparison for 31 functions (execution traces, redefine, rename, delete, alias, coroutine, tailcall, command and time limits, cancel, recursion limit) is identical.
 - The official test suite again gives the unmodified result (509262 tests, 8 failures, all in `httpProxy.test`), and both comparison runs are clean under valgrind memcheck.
 - Callgrind confirms 580 of 580 test calls took the fast path.
 - Instructions per call fall 20–30% for every function measured: `sin` 1120 to 848, `pow` 1269 to 996, `isnan` 910 to 637, `max` 1369 to 1096, `lgamma` 1322 to 1050.
 - Wall-clock time per loop iteration falls 12–21% (median of 7 interleaved rounds): `sin` 154 to 133 ns, `pow` 186 to 151 ns, `exp` 164 to 130 ns, `isnan` 131 to 107 ns, `lgamma` 192 to 160 ns.
 
-The heavier the function's own work, the smaller the share saved. The unflagged-command slowdown of 0.6–2.5% reported above was measured on the three-function build and has not been re-measured on this one.
+The heavier the function's own work, the smaller the share saved. The 0.6–2.5% unflagged-command slowdown reported above was measured on the three-function build. The final build was re-measured on two other machines, below.
+
+**Independent wall-clock and suite measurements (Eric Taylor).** The submitter built a stock tree and a patched tree from the same trunk checkout and ran `compare_timing.tcl` (in `extras/`, with `wall3.tcl` and `wall2.tcl`) on two of his own machines: "et" and a faster "et2". Each figure is the median of 7 rounds in which the stock and patched `tclsh` alternate, and each loop iteration includes the loop overhead. Percentages are the change from stock to patched; a negative number is faster.
+
+| Loop body | et | et2 |
+|---|---|---|
+| empty loop (wall3 / wall2) | +5.1% / +6.6% | +5.4% / +6.4% |
+| `sin` | −14.8% | −9.5% |
+| `pow` | −17.2% | −9.1% |
+| `atan2` | −16.0% | −9.2% |
+| `exp` | −11.6% | −9.6% |
+| `isnan` | −17.9% | −12.8% |
+| `sqrt` | −17.1% | −9.2% |
+| `isqrt` | −16.4% | −11.4% |
+| `max` | −13.1% | −12.9% |
+| `fma` | −9.4% | −11.6% |
+| `lgamma` | −15.0% | −8.3% |
+| `round` | −14.6% | −11.7% |
+| `floor` | −16.2% | −10.5% |
+| `abs` | −16.1% | −8.8% |
+| `int` | −14.7% | −12.7% |
+| `double` | −16.2% | −10.6% |
+| `abs + int + double` (three calls) | −17.1% | −11.2% |
+| `set s [expr {$s + abs($k - 500)}]` | −10.8% | −8.8% |
+| `lsearch {a b c} a` (not flagged) | +1.0% | −6.8% |
+| user proc call (not flagged) | −1.7% | −4.1% |
+
+The math functions are 8–18% faster in raw loop time on both machines. The two unflagged commands moved in both directions by a few percent (`lsearch` +1.0% and −6.8%, `proc` −1.7% and −4.1%). The patch does not change their route, so these look like measurement scatter or layout effects, not a speed-up, and no slowdown was found. The empty loop is consistently 5–7% slower on the patched build on both machines; that is an open item (see above).
+
+With the new test file added, the submitter's official suite gives 526,502 tests and 0 failures on the patched tree, against 526,406 and 0 failures on the stock tree; the 96 extra tests are `fastleaf.test`. These totals are larger than the 509,262 above, and the 8 `httpProxy.test` failures do not occur on his machine; the difference is probably the build environment and test configuration, which has not been investigated. The stock and patched runs on his machine differ only by the 96 added tests.
 
 ## Tests
 
