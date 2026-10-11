@@ -1,0 +1,340 @@
+--- a/generic/tclCompile.h	2026-10-06 14:38:19.705200585 -0700
++++ b/generic/tclCompile.h	2026-10-11 15:18:14.728048632 -0700
+@@ -974,7 +974,6 @@
+     INST_ARITH_SERIES,
+     INST_UPLEVEL,
+     INST_FOREACH_INDEX,
+-    INST_LIST_RANGE,
+ 
+     /* The last opcode */
+     LAST_INST_OPCODE
+@@ -989,7 +988,7 @@
+  * instruction.
+  */
+ 
+-#define MAX_INSTRUCTION_OPERANDS 2
++#define MAX_INSTRUCTION_OPERANDS 3
+ 
+ typedef enum InstOperandType {
+     OPERAND_NONE,
+@@ -2110,6 +2109,10 @@
+ // Issue an instruction with two four-byte arguments.
+ #define OP44(name,val1,val2) \
+     TclEmitInstInt44(INST_##name, (unsigned)(val1), (unsigned)(val2), envPtr)
++// Issue an instruction with two four-byte arguments and a single-byte argument.
++#define OP441(name,val1,val2,val3) \
++    (TclEmitInstInt44(INST_##name, (unsigned)(val1), (unsigned)(val2), envPtr), \
++     TclEmitInt1((val3), envPtr))
+ // Issue an instruction with a foun-byte argument and a single-byte argument.
+ #define OP41(name,val1,val2) \
+     TclEmitInstInt41(INST_##name, (unsigned)(val1), (unsigned)(val2), envPtr)
+--- a/generic/tclCompile.c	2026-10-06 14:38:19.706504783 -0700
++++ b/generic/tclCompile.c	2026-10-11 15:18:14.729316074 -0700
+@@ -41,6 +41,8 @@
+     {name,size,stack,1,{type1,OPERAND_NONE}}
+ #define TCL_INSTRUCTION_ENTRY2(name,size,stack,type1,type2) \
+     {name,size,stack,2,{type1,type2}}
++#define TCL_INSTRUCTION_ENTRY3(name,size,stack,type1,type2,type3) \
++    {name,size,stack,3,{type1,type2,type3}}
+ 
+ /* TODO: Mark these differently when REMOVE_DEPRECATED_OPCODES is defined. */
+ #define DEPRECATED_INSTRUCTION_ENTRY(name,stack) \
+@@ -389,9 +391,11 @@
+     TCL_INSTRUCTION_ENTRY1(
+ 	"listIndexImm",	  5,	0,	  OPERAND_IDX4),
+ 	/* List Index:	push (lindex stktop op4) */
+-    TCL_INSTRUCTION_ENTRY2(
+-	"listRangeImm",	  9,	0,	  OPERAND_IDX4, OPERAND_IDX4),
+-	/* List Range:	push (lrange stktop op4 op4) */
++    TCL_INSTRUCTION_ENTRY3(
++	"listRangeImm",	  10,	0,	  OPERAND_IDX4, OPERAND_IDX4, OPERAND_UINT1),
++	/* List Range:	if op1 is 0, push (lrange stktop op4 op4);
++	 * if op1 is 1, the indices are on the stack instead (op4 op4 unused):
++	 * Stack: ... list first last => ... [lrange list first last] */
+     TCL_INSTRUCTION_ENTRY2(
+ 	"startCommand",	  9,	0,	  OPERAND_OFFSET4, OPERAND_UINT4),
+ 	/* Start of bytecoded command: op is the length of the cmd's code, op2
+@@ -994,13 +998,6 @@
+ 	 * Stack: ... listObjs... iterTracker info =>
+ 	 *			... listObjs... iterTracker info stepIdx */
+ 
+-    TCL_INSTRUCTION_ENTRY(
+-	"listRange",		-2),
+-	/* Implements [lrange] when either index is not known at compile
+-	 * time; the indices are index values as accepted by [lrange], not
+-	 * encoded as for listRangeImm.
+-	 * Stack: ... list first last => ... [lrange list first last] */
+-
+     {NULL, 0, 0, 0, {OPERAND_NONE}}
+ };
+ 
+--- a/generic/tclCompCmdsGR.c	2026-10-06 14:38:27.647515079 -0700
++++ b/generic/tclCompCmdsGR.c	2026-10-11 15:18:14.730061887 -0700
+@@ -860,7 +860,7 @@
+ 	 * the string representation at this point because INST_LAPPEND_LIST*
+ 	 * might use it directly.
+ 	 */
+-	OP44(			LIST_RANGE_IMM, 0, TCL_INDEX_END);
++	OP441(			LIST_RANGE_IMM, 0, TCL_INDEX_END, 0);
+ 	goto lappendList;
+     } else if (!EnvHasLVT(envPtr)) {
+ 	/*
+@@ -1073,7 +1073,7 @@
+      * Generate code to leave the rest of the list on the stack.
+      */
+ 
+-    OP44(		LIST_RANGE_IMM, idx, TCL_INDEX_END);
++    OP441(		LIST_RANGE_IMM, idx, TCL_INDEX_END, 0);
+ 
+     return TCL_OK;
+ }
+@@ -1286,7 +1286,7 @@
+      */
+ 
+     if (concat && numWords == 2) {
+-	OP44(			LIST_RANGE_IMM, 0, TCL_INDEX_END);
++	OP441(			LIST_RANGE_IMM, 0, TCL_INDEX_END, 0);
+     }
+     return TCL_OK;
+ }
+@@ -1375,7 +1375,8 @@
+ 	PUSH_TOKEN(		listTokenPtr, 1);
+ 	PUSH_TOKEN(		firstTokenPtr, 2);
+ 	PUSH_TOKEN(		lastTokenPtr, 3);
+-	OP(			LIST_RANGE);
++	OP441(			LIST_RANGE_IMM, 0, 0, 1);
++	TclAdjustStackDepth(-2, envPtr);
+ 	return TCL_OK;
+     }
+ 
+@@ -1392,7 +1393,7 @@
+      */
+ 
+     PUSH_TOKEN(			listTokenPtr, 1);
+-    OP44(			LIST_RANGE_IMM, idx1, idx2);
++    OP441(			LIST_RANGE_IMM, idx1, idx2, 0);
+     return TCL_OK;
+ }
+ 
+--- a/generic/tclExecute.c	2026-10-06 14:39:01.235609710 -0700
++++ b/generic/tclExecute.c	2026-10-11 15:18:33.995361438 -0700
+@@ -5272,8 +5272,43 @@
+ 	TRACE_APPEND_OBJ(objResultPtr);
+ 	NEXT_INST_F(1, 2, -1);
+ 
+-    case INST_LIST_RANGE_IMM:	/* lrange with objc==4 and both indices in
+-				 * bytecode stream */
++    case INST_LIST_RANGE_IMM:	/* lrange with objc==4 */
++
++	if (TclGetUInt1AtPtr(pc + 9)) {
++	    /* The indices are on the stack, not in the bytecode. */
++		Tcl_Size listLen, first, last;
++
++		/*
++		 * Stack: ... list first last. Mirrors Tcl_LrangeObjCmd, including the
++		 * order in which arguments are validated, so that error messages are
++		 * the same as for the uncompiled command.
++		 */
++
++		valuePtr = OBJ_AT_DEPTH(2);
++		value2Ptr = OBJ_UNDER_TOS;
++		tmpPtr = OBJ_AT_TOS;
++		TRACE("\"%.30s\" \"%.30s\" \"%.30s\" => ",
++			O2S(valuePtr), O2S(value2Ptr), O2S(tmpPtr));
++
++		DECACHE_STACK_INFO();
++		if (TclListObjLength(interp, valuePtr, &listLen) != TCL_OK
++			|| TclGetIntForIndexM(interp, value2Ptr, listLen - 1,
++				&first) != TCL_OK
++			|| TclGetIntForIndexM(interp, tmpPtr, listLen - 1,
++				&last) != TCL_OK
++			|| Tcl_ListObjRange(interp, valuePtr, first, last,
++				&objResultPtr) != TCL_OK) {
++		    CACHE_STACK_INFO();
++		    TRACE_ERROR(interp);
++		    goto gotError;
++		}
++		CACHE_STACK_INFO();
++
++		TRACE_APPEND_OBJ(objResultPtr);
++		NEXT_INST_V(10, 3, 1);
++	}
++
++	/* Both indices are in the bytecode stream. */
+ 
+ 	/*
+ 	 * Pop the list and get the indices.
+@@ -5300,8 +5335,8 @@
+ 	 */
+ 
+ #ifndef TCL_COMPILE_DEBUG
+-	if (pc[9] == INST_POP) {
+-	    NEXT_INST_F0(10, 1);
++	if (pc[10] == INST_POP) {
++	    NEXT_INST_F0(11, 1);
+ 	}
+ #endif
+ 
+@@ -5310,7 +5345,7 @@
+ 	    /* avoid return of not canonical list (e. g. spaces in string repr.) */
+ 	    if (!valuePtr->bytes || !valuePtr->length) {
+ 		TRACE_APPEND("\n");
+-		NEXT_INST_F0(9, 0);
++		NEXT_INST_F0(10, 0);
+ 	    }
+ 	    goto emptyList;
+ 	}
+@@ -5321,7 +5356,7 @@
+ 	emptyList:
+ 	    TclNewObj(objResultPtr);
+ 	    TRACE_APPEND_OBJ(objResultPtr);
+-	    NEXT_INST_F(9, 1, 1);
++	    NEXT_INST_F(10, 1, 1);
+ 	}
+ 	toIdx = TclIndexDecode(toIdxEnc, objc - 1);
+ 	if (toIdx == TCL_INDEX_NONE) {
+@@ -5351,41 +5386,7 @@
+ 	}
+ 
+ 	TRACE_APPEND_OBJ(objResultPtr);
+-	NEXT_INST_F(9, 1, 1);
+-
+-    case INST_LIST_RANGE: {	/* lrange with objc==4 and at least one index
+-				 * not known at compile time */
+-	Tcl_Size listLen, first, last;
+-
+-	/*
+-	 * Stack: ... list first last. Mirrors Tcl_LrangeObjCmd, including the
+-	 * order in which arguments are validated, so that error messages are
+-	 * the same as for the uncompiled command.
+-	 */
+-
+-	valuePtr = OBJ_AT_DEPTH(2);
+-	value2Ptr = OBJ_UNDER_TOS;
+-	tmpPtr = OBJ_AT_TOS;
+-	TRACE("\"%.30s\" \"%.30s\" \"%.30s\" => ",
+-		O2S(valuePtr), O2S(value2Ptr), O2S(tmpPtr));
+-
+-	DECACHE_STACK_INFO();
+-	if (TclListObjLength(interp, valuePtr, &listLen) != TCL_OK
+-		|| TclGetIntForIndexM(interp, value2Ptr, listLen - 1,
+-			&first) != TCL_OK
+-		|| TclGetIntForIndexM(interp, tmpPtr, listLen - 1,
+-			&last) != TCL_OK
+-		|| Tcl_ListObjRange(interp, valuePtr, first, last,
+-			&objResultPtr) != TCL_OK) {
+-	    CACHE_STACK_INFO();
+-	    TRACE_ERROR(interp);
+-	    goto gotError;
+-	}
+-	CACHE_STACK_INFO();
+-
+-	TRACE_APPEND_OBJ(objResultPtr);
+-	NEXT_INST_V(1, 3, 1);
+-    }
++	NEXT_INST_F(10, 1, 1);
+ 
+     case INST_LIST_IN:
+     case INST_LIST_NOT_IN:	/* Basic list containment operators. */
+--- a/generic/tclAssembly.c	2026-10-06 21:09:08.079190680 -0700
++++ b/generic/tclAssembly.c	2026-10-11 15:18:14.731039238 -0700
+@@ -420,7 +420,6 @@
+     {"listIndexImm",	ASSEM_INDEX,	INST_LIST_INDEX_IMM,	1,	1},
+     {"listLength",	ASSEM_1BYTE,	INST_LIST_LENGTH,	1,	1},
+     {"listNotIn",	ASSEM_1BYTE,	INST_LIST_NOT_IN,	2,	1},
+-    {"listRange",	ASSEM_1BYTE,	INST_LIST_RANGE,	3,	1},
+     {"load",		ASSEM_LVT_N,	INST_LOAD_SCALAR,	0,	1},
+     {"loadArray",	ASSEM_LVT_N,	INST_LOAD_ARRAY,	1,	1},
+     {"loadArrayStk",	ASSEM_1BYTE,	INST_LOAD_ARRAY_STK,	2,	1},
+--- a/tests/compile.test	2026-10-06 15:10:39.836150318 -0700
++++ b/tests/compile.test	2026-10-11 15:18:44.315206013 -0700
+@@ -1113,12 +1113,12 @@
+     }} P Q R S T
+ } {1 2 3 4 5 6 7 8 9 10}
+ 
+-test compile-22.1 {lrange with non-literal index compiles to listRange} -body {
++test compile-22.1 {lrange with non-literal index compiles to listRangeImm mode 1} -body {
+     proc lrcomp {l i j} {lrange $l $i $j}
+     tcl::unsupported::disassemble proc lrcomp
+ } -cleanup {
+     rename lrcomp {}
+-} -match glob -result {*listRange *}
++} -match glob -result {*listRangeImm 0 0 1*}
+ test compile-22.2 {lrange with non-literal index does not call the command} -body {
+     proc lrcomp {l i j} {lrange $l $i $j}
+     string match *invokeStk* [tcl::unsupported::disassemble proc lrcomp]
+@@ -1131,25 +1131,13 @@
+ } -cleanup {
+     rename lrcomp {}
+ } -match glob -result {*listRangeImm 1 end-1*}
+-test compile-22.4 {listRange is described by getbytecode} -body {
++test compile-22.4 {dynamic lrange is described by getbytecode} -body {
+     proc lrcomp {l i j} {lrange $l $i $j}
+     set insts [dict get [tcl::unsupported::getbytecode proc lrcomp] instructions]
+     lmap {pc inst} $insts {lindex $inst 0}
+ } -cleanup {
+     rename lrcomp {}
+-} -result {loadScalar loadScalar loadScalar listRange done}
+-test compile-22.5 {listRange from assembled code is described by getbytecode} -body {
+-    proc lrcomp {} {
+-	tcl::unsupported::assemble {
+-	    push {a b c d}; push 1; push end; listRange
+-	}
+-    }
+-    lrcomp
+-    set insts [dict get [tcl::unsupported::getbytecode proc lrcomp] instructions]
+-    lmap {pc inst} $insts {lindex $inst 0}
+-} -cleanup {
+-    rename lrcomp {}
+-} -result {push push push listRange done}
++} -result {loadScalar loadScalar loadScalar listRangeImm done}
+ 
+ # TODO sometime - check that bytecode from tbcload is *not* disassembled.
+ 
+--- a/tests/assemble.test	2026-10-06 14:40:21.428930528 -0700
++++ b/tests/assemble.test	2026-10-11 15:18:44.314853349 -0700
+@@ -805,44 +805,6 @@
+     }
+     -result x
+ }
+-test assemble-7.47 {listRange} {
+-    -body {
+-	assemble {
+-	    push {a b c d e}; push 1; push 3; listRange
+-	}
+-    }
+-    -result {b c d}
+-}
+-test assemble-7.48 {listRange - end-relative and out of range indices} {
+-    -body {
+-	assemble {
+-	    push {a b c d e}; push 2; push end-1; listRange
+-	    push {a b c d e}; push -5; push 100; listRange
+-	    push {a b c d e}; push 3; push 1; listRange
+-	    list 3
+-	}
+-    }
+-    -result {{c d} {a b c d e} {}}
+-}
+-test assemble-7.49 {listRange - bad index} {
+-    -body {
+-	assemble {
+-	    push {a b c d e}; push rubbish; push 3; listRange
+-	}
+-    }
+-    -returnCodes error
+-    -match glob
+-    -result {bad index "rubbish"*}
+-}
+-test assemble-7.50 {listRange - not a list} {
+-    -body {
+-	assemble {
+-	    push "a \{ b"; push 0; push 1; listRange
+-	}
+-    }
+-    -returnCodes error
+-    -result {unmatched open brace in list}
+-}
+ 
+ # assemble-8 ASSEM_LVT and FindLocalVar
+ 
