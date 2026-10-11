@@ -80,7 +80,7 @@ Done so far: this write-up and design; the prototype (about 150 added lines in `
 
 These are exact callgrind counts per call, loop overhead subtracted, measured with `expr` inside a proc loop. They include the small amount of work around the call, so they are not directly comparable with the 861 above, which counts only the TAL call sequence.
 
-In wall-clock time, `abs` and `int` fall from about 144 ns to about 121 ns per iteration. On the early three-function build, unflagged calls looked about 1–2% slower in wall time (`floor` about 149–157 ns before, 153–158 ns after; a proc call about 224 ns before, 228 ns after), although their instruction counts were unchanged. On the final 58-function build, re-measured on two other machines (see the table below), `proc` and `lsearch` show no consistent change, while the empty loop alone is 5–7% slower. The cause is not established. A code-layout effect in the very large executor function is the likely one, since the empty loop moved with no relevant change to it. A control build with the fast path present but no command flagged would settle it.
+In wall-clock time, `abs` and `int` fall from about 144 ns to about 121 ns per iteration. On the early three-function build, unflagged calls looked about 1–2% slower in wall time (`floor` about 149–157 ns before, 153–158 ns after; a proc call about 224 ns before, 228 ns after), although their instruction counts were unchanged. On the final 58-function build, re-measured on two other machines (see the table below), `proc` and `lsearch` show no consistent change, while the empty loop alone moves by 5–7% (slower on two machines, 16% faster on a third). The cause is not established. A code-layout effect in the very large executor function is the likely one, since the empty loop moved with no relevant change to it. A control build with the fast path present but no command flagged would settle it.
 
 Correctness checks:
 
@@ -102,32 +102,32 @@ The tests found one real difference. The executor runs its async, cancel and lim
 
 The heavier the function's own work, the smaller the share saved. The 0.6–2.5% unflagged-command slowdown reported above was measured on the three-function build. The final build was re-measured on two other machines, below.
 
-**Independent wall-clock and suite measurements (Eric Taylor).** The submitter built a stock tree and a patched tree from the same trunk checkout and ran `compare_timing.tcl` (in `extras/`, with `wall3.tcl` and `wall2.tcl`) on two of his own machines: "et" and a faster "et2". Each figure is the median of 7 rounds in which the stock and patched `tclsh` alternate, and each loop iteration includes the loop overhead. Percentages are the change from stock to patched; a negative number is faster.
+**Independent wall-clock and suite measurements (Eric Taylor).** The submitter built a stock tree and a patched tree from the same trunk checkout and ran `compare_timing.tcl` (in `extras/`, with `wall3.tcl` and `wall2.tcl`) on two of his own machines: "et" and a faster "et2". The third column is the same driver run by Claude on the builds in its cloud sandbox (a shared 2-core VM, so the least controlled of the three). Each figure is the median of 7 rounds in which the stock and patched `tclsh` alternate, and each loop iteration includes the loop overhead. Percentages are the change from stock to patched; a negative number is faster.
 
-| Loop body | et | et2 |
-|---|---|---|
-| empty loop (wall3 / wall2) | +5.1% / +6.6% | +5.4% / +6.4% |
-| `sin` | −14.8% | −9.5% |
-| `pow` | −17.2% | −9.1% |
-| `atan2` | −16.0% | −9.2% |
-| `exp` | −11.6% | −9.6% |
-| `isnan` | −17.9% | −12.8% |
-| `sqrt` | −17.1% | −9.2% |
-| `isqrt` | −16.4% | −11.4% |
-| `max` | −13.1% | −12.9% |
-| `fma` | −9.4% | −11.6% |
-| `lgamma` | −15.0% | −8.3% |
-| `round` | −14.6% | −11.7% |
-| `floor` | −16.2% | −10.5% |
-| `abs` | −16.1% | −8.8% |
-| `int` | −14.7% | −12.7% |
-| `double` | −16.2% | −10.6% |
-| `abs + int + double` (three calls) | −17.1% | −11.2% |
-| `set s [expr {$s + abs($k - 500)}]` | −10.8% | −8.8% |
-| `lsearch {a b c} a` (not flagged) | +1.0% | −6.8% |
-| user proc call (not flagged) | −1.7% | −4.1% |
+| Loop body | et | et2 | sandbox (Claude) |
+|---|---|---|---|
+| empty loop (wall3 / wall2) | +5.1% / +6.6% | +5.4% / +6.4% | −16.3% / −15.9% |
+| `sin` | −14.8% | −9.5% | −22.0% |
+| `pow` | −17.2% | −9.1% | −22.2% |
+| `atan2` | −16.0% | −9.2% | −20.4% |
+| `exp` | −11.6% | −9.6% | −23.5% |
+| `isnan` | −17.9% | −12.8% | −26.8% |
+| `sqrt` | −17.1% | −9.2% | −21.0% |
+| `isqrt` | −16.4% | −11.4% | −20.5% |
+| `max` | −13.1% | −12.9% | −14.3% |
+| `fma` | −9.4% | −11.6% | −12.3% |
+| `lgamma` | −15.0% | −8.3% | −19.1% |
+| `round` | −14.6% | −11.7% | −19.6% |
+| `floor` | −16.2% | −10.5% | −18.5% |
+| `abs` | −16.1% | −8.8% | −23.5% |
+| `int` | −14.7% | −12.7% | −24.4% |
+| `double` | −16.2% | −10.6% | −24.6% |
+| `abs + int + double` (three calls) | −17.1% | −11.2% | −20.4% |
+| `set s [expr {$s + abs($k - 500)}]` | −10.8% | −8.8% | −17.7% |
+| `lsearch {a b c} a` (not flagged) | +1.0% | −6.8% | −4.9% |
+| user proc call (not flagged) | −1.7% | −4.1% | −2.6% |
 
-The math functions are 8–18% faster in raw loop time on both machines. The two unflagged commands moved in both directions by a few percent (`lsearch` +1.0% and −6.8%, `proc` −1.7% and −4.1%). The patch does not change their route, so these look like measurement scatter or layout effects, not a speed-up, and no slowdown was found. The empty loop is consistently 5–7% slower on the patched build on both machines; that is an open item (see above).
+The math functions are 8–18% faster in raw loop time on Eric's two machines (12–27% in the sandbox). The two unflagged commands moved by a few percent, mostly downward (`lsearch` +1.0%, −6.8%, −4.9%; `proc` −1.7%, −4.1%, −2.6%). The patch does not change their route, so these look like measurement scatter or layout effects, not a speed-up, and no slowdown was found. The empty loop is 5–7% slower on the patched build on both of Eric's machines, but 16% faster in the sandbox build, so the sign of the effect is not fixed. That points to code layout and build differences, not a real cost of the patch, but it is not proven and remains an open item (see above). Because the sandbox's empty loop got faster, its math-function gains (12–27%) are probably inflated; the two independent machines are the better guide.
 
 With the new test file added, the submitter's official suite gives 526,502 tests and 0 failures on the patched tree, against 526,406 and 0 failures on the stock tree; the 96 extra tests are `fastleaf.test`. These totals are larger than the 509,262 above, and the 8 `httpProxy.test` failures do not occur on his machine; the difference is probably the build environment and test configuration, which has not been investigated. The stock and patched runs on his machine differ only by the 96 added tests.
 
