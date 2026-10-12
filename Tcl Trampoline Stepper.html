@@ -80,6 +80,9 @@ button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .var { flex: 1; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-family: var(--mono); font-size: .86rem; background: var(--bg); }
 .var small { display: block; font-family: var(--mono); font-size: .78rem; color: var(--muted); }
 .h2b { margin-top: 4px; }
+.res { margin-top: 10px; border: 1px dashed var(--line); border-radius: 4px; padding: 4px 8px; font-family: var(--mono); font-size: .86rem; color: var(--muted); }
+.res small { display: block; font-family: var(--font); font-size: .72rem; }
+.res.got { border: 1px solid var(--accent); box-shadow: 0 0 0 2px var(--accent); color: var(--fg); }
 .var.undef { border-style: dashed; color: var(--muted); font-style: italic; }
 .var.fresh2 { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .src { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; display: flex; flex-direction: column; gap: 2px; font-size: .9rem; overflow-x: auto; }
@@ -135,7 +138,7 @@ li { margin-bottom: 4px; }
 
 <main>
   <header>
-    <p class="ver mono">Version 13 &middot; Oct 11, 2026</p>
+    <p class="ver mono">Version 1.0 &middot; Oct 11, 2026</p>
     <h1>Tcl Trampoline Stepper</h1>
     <p class="lede">Follow one math function call, <code>abs($x)</code> inside <code>expr</code> in a proc, through the bytecode executor. The compiler turns it into a call of the command <code>tcl::mathfunc::abs</code>. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
   </header>
@@ -168,6 +171,7 @@ li { margin-bottom: 4px; }
       <div class="vars" id="vars"></div>
       <h2 class="h2b">Value stack <small>Tcl objects</small></h2>
       <div class="stack" id="vs"></div>
+      <div class="res" id="res"></div>
     </section>
     <section class="pane">
       <h2>Trampoline stack <small>callback records</small></h2>
@@ -281,7 +285,7 @@ li { margin-bottom: 4px; }
     S(5, ['5'], [], 'storeScalar y',
       'The variable y is set to 5. The value stays on the stack, as it does for every store.'),
     S(5, [], [], 'done',
-      'The proc returns the top of the stack, 5, as its result. Same end state in both modes.')
+      'done sets the interpreter result to the top value on the stack, 5, which is what the proc returns. The bytecode then exits and the stack is cleaned up, so it shows empty. Unlike pop, the 5 is not discarded: the interpreter result now holds it. Same end state in all three modes.')
   ];
   var stock = head.concat([
     S(2, [CMD, '-5'], [TEBC], 'invokeStk 2: save the place',
@@ -345,6 +349,9 @@ li { margin-bottom: 4px; }
     }).join('');
     var yset = cur !== null && (cur > 4 || (cur === 4 && inf[1] === 'done'));
     $('vars').innerHTML = '<div class="var"><small>x (%v0)</small>-5</div><div class="var' + (yset ? ' set' : ' undef') + (cur === 4 && inf[1] === 'done' ? ' fresh2' : '') + '"><small>y (%v1)</small>' + (yset ? '5' : 'undefined') + '</div>';
+    var fin = cur === 5 && inf[1] === 'done';
+    $('res').innerHTML = '<small>Interpreter result</small>' + (fin ? '5' : '&ndash;');
+    $('res').className = 'res' + (fin ? ' got' : '');
     $('cap-top').textContent = cur === null ? 'Before the first instruction'
       : (inf[1] === 'run' ? 'Running instruction ' : 'Just ran instruction ') + cur + ': ' + CODE[cur];
     $('cap-next').textContent = nxt === null ? 'Next instruction: none, the proc returns its result'
