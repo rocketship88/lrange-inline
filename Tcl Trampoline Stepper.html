@@ -74,6 +74,15 @@ button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .code div { padding: 4px 8px; border-radius: 4px; display: flex; gap: 10px; border: 1px solid transparent; overflow-wrap: anywhere; }
 .code .n { color: var(--muted); width: 1.2em; flex: none; }
 .code .on { background: var(--pc); border-color: var(--r-nrc-b); font-weight: 600; }
+/* locals + source */
+.vars { display: flex; gap: 8px; margin-bottom: 10px; }
+.var { flex: 1; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-family: var(--mono); font-size: .86rem; background: var(--bg); }
+.var small { display: block; font-family: var(--mono); font-size: .78rem; color: var(--muted); }
+.h2b { margin-top: 4px; }
+.var.undef { border-style: dashed; color: var(--muted); font-style: italic; }
+.var.fresh2 { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.src { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; display: flex; flex-direction: column; gap: 2px; font-size: .9rem; overflow-x: auto; }
+.src .lbl { font-family: var(--font); font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .code .next { border: 1px dashed var(--muted); }
 .insline { font-size: .84rem; color: var(--muted); overflow-wrap: anywhere; }
 .insline.next { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
@@ -117,16 +126,20 @@ ul { margin: 6px 0 0; padding-left: 1.2em; }
 li { margin-bottom: 4px; }
 .fine { color: var(--muted); font-size: .85rem; }
 .ver { color: var(--muted); margin: 0 0 6px; font-size: .8rem; }
+.dis { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.dis pre { margin: 0; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: .8rem; line-height: 1.45; overflow-x: auto; }
 .about { border-top: 1px solid var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 8px; color: var(--muted); font-size: .9rem; max-width: 80ch; }
 .about h2 { color: var(--fg); margin: 0; }
 </style>
 
 <main>
   <header>
-    <p class="ver mono">Version 7 &middot; Oct 11, 2026</p>
+    <p class="ver mono">Version 11 &middot; Oct 11, 2026</p>
     <h1>Tcl Trampoline Stepper</h1>
-    <p class="lede">Follow one command call, <code>tcl::mathfunc::abs $x</code> inside a proc, through the bytecode executor. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
+    <p class="lede">Follow one math function call, <code>abs($x)</code> inside <code>expr</code> in a proc, through the bytecode executor. The compiler turns it into a call of the command <code>tcl::mathfunc::abs</code>. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
   </header>
+
+  <div class="src mono" aria-label="The Tcl being run"><span class="lbl">Tcl source</span><code>proc p {x} { set y [expr {abs($x)}] }</code><code>p -5</code></div>
 
   <div class="bar">
     <div class="seg" role="group" aria-label="Mode">
@@ -149,7 +162,9 @@ li { margin-bottom: 4px; }
       <div class="suspended" id="susp"></div>
     </section>
     <section class="pane">
-      <h2>Value stack <small>Tcl objects</small></h2>
+      <h2>Locals (LVT) of p</h2>
+      <div class="vars" id="vars"></div>
+      <h2 class="h2b">Value stack <small>Tcl objects</small></h2>
       <div class="stack" id="vs"></div>
     </section>
     <section class="pane">
@@ -199,6 +214,28 @@ li { margin-bottom: 4px; }
     </section>
   </div>
 
+  <section class="dis">
+    <h2>Disassembly of the proc</h2>
+    <p class="fine">Output of <code>tcl::unsupported::disassemble proc p</code> on this build of Tcl trunk, with the memory addresses and file path trimmed. The local variable table (LVT) is the two <code>slot</code> lines; <code>%v0</code> and <code>%v1</code> in the instructions refer to them.</p>
+    <pre class="mono" tabindex="0">ByteCode 0x&hellip;, refCt 1, epoch 24, interp 0x&hellip; (epoch 24)
+  Source " set y [expr {abs($x)}] "
+  Cmds 2, src 24, inst 22, litObjs 1, aux 0, stkDepth 2, code/src 0.00
+  Proc 0x&hellip;, refCt 1, args 1, compiled locals 2
+      slot 0, scalar, arg, "x"
+      slot 1, scalar, "y"
+  Commands 2:
+      1: pc 0-20, src 1-23        2: pc 0-15, src 8-21
+  Command 1: "set y [expr {abs($x)}] "
+  Command 2: "expr {abs($x)}..."
+    (0) push 0 	# "tcl::mathfunc::abs"
+    (5) loadScalar %v0 	# var "x"
+    (10) invokeStk 2
+    (15) tryCvtToNumeric
+    (16) storeScalar %v1 	# var "y"
+    (21) done</pre>
+    <p class="fine">The number in parentheses is the byte offset of the instruction in the compiled code. That byte offset is the bytecode pc the executor saves in the TEBCresume record. The stepper numbers the instructions 0 to 5 instead, to keep the steps readable. <code>stkDepth 2</code> is the deepest the value stack gets, which is the command name plus the argument.</p>
+  </section>
+
   <section class="about">
     <h2>About this page</h2>
     <p>Written by Claude (an AI) for ET, from reading the Tcl trunk source (<code>tclExecute.c</code>, <code>tclBasic.c</code>, <code>doc/NRE.3</code>) and disassembling a real proc. It is a teaching model of one command call, not a trace of a running interpreter, and the guard checks are collapsed into single steps. It shows record counts only, not timings.</p>
@@ -212,6 +249,7 @@ li { margin-bottom: 4px; }
     'push "tcl::mathfunc::abs"',
     'loadScalar x',
     'invokeStk 2',
+    'tryCvtToNumeric',
     'storeScalar y',
     'done'
   ];
@@ -229,17 +267,19 @@ li { margin-bottom: 4px; }
   }
   var head = [
     S(0, [], [], 'Bytecode executor is running',
-      'The proc body is bytecode, run by one big function (TEBCresume). Below it on the trampoline stack are the records of whatever called this proc. Nothing of ours is on the stack yet.'),
+      'The call p -5 has already set things up: a call frame was built, and the argument -5 was stored in the local slot %v0 (x). The slot for y (%v1) is empty. The proc body is bytecode, run by one big function (TEBCresume). Below it on the trampoline stack are the records of whatever called this proc. Nothing of ours is on the stack yet.'),
     S(1, [CMD], [], 'push',
-      'The command name goes on the value stack as a constant. No trampoline involvement: the bytecode executor just advances.'),
+      'expr compiles abs(...) into a call of the command tcl::mathfunc::abs, so the name goes on the value stack as a constant. No trampoline involvement: the bytecode executor just advances.'),
     S(2, [CMD, '-5'], [], 'loadScalar x',
       'The variable x (value -5) is pushed as the argument. The next instruction calls the command with these two words.')
   ];
   var tail = [
-    S(4, ['5'], [], 'storeScalar y',
-      'y is set to 5. The value stays on the stack, as it does for every store.'),
-    S(4, [], [], 'done',
-      'The proc returns the top of the stack as its result. Same end state in both modes.')
+    S(4, ['5'], [], 'tryCvtToNumeric',
+      'expr adds this after a function result: if the top value can be a number it is converted, otherwise it is left alone. The value is 5 either way.'),
+    S(5, ['5'], [], 'storeScalar y',
+      'The variable y is set to 5. The value stays on the stack, as it does for every store.'),
+    S(5, [], [], 'done',
+      'The proc returns the top of the stack, 5, as its result. Same end state in both modes.')
   ];
   var stock = head.concat([
     S(2, [CMD, '-5'], [TEBC], 'invokeStk 2: save the place',
@@ -276,8 +316,8 @@ li { margin-bottom: 4px; }
   var MODES = {stock: stock, fast: fast};
   /* [instruction being described, 'done' or 'run'] for each step */
   var INFO = {
-    stock: [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done']],
-    fast:  [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done']]
+    stock: [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done'], [5, 'done']],
+    fast:  [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done'], [5, 'done']]
   };
   var mode = 'stock', i = 0, timer = null;
   var $ = function (id) { return document.getElementById(id); };
@@ -292,6 +332,8 @@ li { margin-bottom: 4px; }
     $('code').innerHTML = CODE.map(function (c, n) {
       return '<div class="' + (n === cur ? 'on' : n === nxt ? 'next' : '') + '"><span class="n">' + n + '</span><span>' + c.replace(/</g, '&lt;') + '</span></div>';
     }).join('');
+    var yset = cur !== null && (cur > 4 || (cur === 4 && inf[1] === 'done'));
+    $('vars').innerHTML = '<div class="var"><small>x (%v0)</small>-5</div><div class="var' + (yset ? ' set' : ' undef') + (cur === 4 && inf[1] === 'done' ? ' fresh2' : '') + '"><small>y (%v1)</small>' + (yset ? '5' : 'undefined') + '</div>';
     $('cap-top').textContent = cur === null ? 'Before the first instruction'
       : 'Instruction ' + cur + ': ' + CODE[cur] + (inf[1] === 'run' ? '  (in progress)' : '');
     $('cap-next').textContent = nxt === null ? 'Next instruction: none, the proc returns its result'
