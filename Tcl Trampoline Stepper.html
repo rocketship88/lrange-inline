@@ -134,7 +134,7 @@ li { margin-bottom: 4px; }
 
 <main>
   <header>
-    <p class="ver mono">Version 11 &middot; Oct 11, 2026</p>
+    <p class="ver mono">Version 12 &middot; Oct 11, 2026</p>
     <h1>Tcl Trampoline Stepper</h1>
     <p class="lede">Follow one math function call, <code>abs($x)</code> inside <code>expr</code> in a proc, through the bytecode executor. The compiler turns it into a call of the command <code>tcl::mathfunc::abs</code>. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
   </header>
@@ -359,7 +359,7 @@ li { margin-bottom: 4px; }
     if (i === steps.length - 1) stop();
   }
   function stop() { if (timer) { clearInterval(timer); timer = null; $('b-play').textContent = 'Auto-play'; } }
-  function setMode(m) { stop(); mode = m; i = Math.min(i, MODES[m].length - 1); render(); }
+  function setMode(m) { stop(); mode = m; i = 0; render(); }
   $('m-stock').onclick = function () { setMode('stock'); };
   $('m-fast').onclick = function () { setMode('fast'); };
   $('b-next').onclick = function () { stop(); if (i < MODES[mode].length - 1) { i++; render(); } };
