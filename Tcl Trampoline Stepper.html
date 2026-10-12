@@ -74,6 +74,10 @@ button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .code div { padding: 4px 8px; border-radius: 4px; display: flex; gap: 10px; border: 1px solid transparent; overflow-wrap: anywhere; }
 .code .n { color: var(--muted); width: 1.2em; flex: none; }
 .code .on { background: var(--pc); border-color: var(--r-nrc-b); font-weight: 600; }
+.code .next { border: 1px dashed var(--muted); }
+.insline { font-size: .84rem; color: var(--muted); overflow-wrap: anywhere; }
+.insline.next { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+#cap-top { color: var(--fg); font-weight: 600; margin-bottom: 4px; }
 .suspended { margin-top: 8px; font-size: .85rem; color: var(--hot); font-weight: 600; min-height: 1.3em; }
 
 .stack { display: flex; flex-direction: column-reverse; gap: 4px; min-height: 120px; justify-content: flex-start; }
@@ -119,7 +123,7 @@ li { margin-bottom: 4px; }
 
 <main>
   <header>
-    <p class="ver mono">Version 4 &middot; Oct 11, 2026</p>
+    <p class="ver mono">Version 5 &middot; Oct 11, 2026</p>
     <h1>Tcl Trampoline Stepper</h1>
     <p class="lede">Follow one command call, <code>tcl::mathfunc::abs $x</code> inside a proc, through the bytecode executor. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
   </header>
@@ -159,8 +163,10 @@ li { margin-bottom: 4px; }
   <div class="tally" id="tally"></div>
 
   <div class="caption" aria-live="polite">
+    <div class="insline mono" id="cap-top"></div>
     <h2 id="cap-h"></h2>
     <p id="cap-p"></p>
+    <div class="insline next mono" id="cap-next"></div>
   </div>
 
   <div class="cols">
@@ -267,6 +273,11 @@ li { margin-bottom: 4px; }
   ]).concat(tail);
 
   var MODES = {stock: stock, fast: fast};
+  /* [instruction being described, 'done' or 'run'] for each step */
+  var INFO = {
+    stock: [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done']],
+    fast:  [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done']]
+  };
   var mode = 'stock', i = 0, timer = null;
   var $ = function (id) { return document.getElementById(id); };
 
@@ -275,9 +286,15 @@ li { margin-bottom: 4px; }
   }
   function render() {
     var steps = MODES[mode], s = steps[i];
+    var inf = INFO[mode][i], cur = inf[0], nxt = cur === null ? 0 : cur + 1;
+    if (nxt >= CODE.length) nxt = null;
     $('code').innerHTML = CODE.map(function (c, n) {
-      return '<div class="' + (n === s.pc && !s.suspended ? 'on' : '') + '"><span class="n">' + n + '</span><span>' + c.replace(/</g, '&lt;') + '</span></div>';
+      return '<div class="' + (n === cur ? 'on' : n === nxt ? 'next' : '') + '"><span class="n">' + n + '</span><span>' + c.replace(/</g, '&lt;') + '</span></div>';
     }).join('');
+    $('cap-top').textContent = cur === null ? 'Before the first instruction'
+      : 'Instruction ' + cur + ': ' + CODE[cur] + (inf[1] === 'run' ? '  (in progress)' : '');
+    $('cap-next').textContent = nxt === null ? 'Next instruction: none, the proc returns its result'
+      : 'Next instruction: (' + nxt + ') ' + CODE[nxt];
     $('susp').textContent = s.suspended ? 'Suspended: the bytecode executor has returned to the trampoline.' : '';
     $('vs').innerHTML = s.vs.length ? s.vs.map(function (v) { return '<div class="cell">' + v + '</div>'; }).join('')
       : '<div class="empty">empty</div>';
