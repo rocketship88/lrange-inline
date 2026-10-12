@@ -1,4 +1,3 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>Tcl Trampoline Stepper</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
@@ -120,7 +119,7 @@ li { margin-bottom: 4px; }
 
 <main>
   <header>
-    <p class="ver mono">Version 3 &middot; Oct 11, 2026</p>
+    <p class="ver mono">Version 4 &middot; Oct 11, 2026</p>
     <h1>Tcl Trampoline Stepper</h1>
     <p class="lede">Follow one command call, <code>tcl::mathfunc::abs $x</code> inside a proc, through the bytecode executor. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
   </header>
@@ -167,7 +166,7 @@ li { margin-bottom: 4px; }
   <div class="cols">
     <section>
       <h2>Which opcodes use the trampoline</h2>
-      <p class="fine">Found by searching <code>tclExecute.c</code> for the yield macro. Seven opcode handlers return to the trampoline; everything else runs straight through inside the executor.</p>
+      <p class="fine">Found by searching <code>tclExecute.c</code> for the yield macro. Seven opcode handlers return to the trampoline; everything else runs straight through inside the bytecode executor.</p>
       <div class="tbl"><table>
         <tr><th>Opcode</th><th>What it does</th></tr>
         <tr><td><code>invokeStk</code> (and the deprecated <code>invokeStk1</code>)</td><td>Call a command by words on the stack</td></tr>
@@ -184,7 +183,7 @@ li { margin-bottom: 4px; }
       <h2>What a record is</h2>
       <p>The stack holds callback records, not instructions. Each record is a function pointer plus four data words (<code>NRE_callback</code>). The trampoline loop in <code>TclNRRunCallbacks</code> pops the top record, calls its function, and repeats until the stack is back to where it started.</p>
       <ul>
-        <li><b>TEBCresume</b> saves the executor: its data block, the pc to resume at, and the cleanup count.</li>
+        <li><b>TEBCresume</b> saves the bytecode executor: its data block, the pc to resume at, and the cleanup count.</li>
         <li><b>NRCommand</b> runs after the command: level count, async, cancel and limit checks.</li>
         <li><b>EvalObjvCore</b> finds the command, runs trace checks, then schedules Dispatch.</li>
         <li><b>Dispatch</b> calls the command's C function with <code>objc</code> and <code>objv</code>.</li>
@@ -210,7 +209,7 @@ li { margin-bottom: 4px; }
     'done'
   ];
   var BASE = {k: 'base', t: "caller's records", s: 'below, untouched'};
-  var TEBC = {k: 'tebc', t: 'TEBCresume', s: 'saved executor, resume at pc 3'};
+  var TEBC = {k: 'tebc', t: 'TEBCresume', s: 'saved bytecode executor, resume at pc 3'};
   var NRC  = {k: 'nrc',  t: 'NRCommand',  s: 'after-command checks'};
   var EOC  = {k: 'eoc',  t: 'EvalObjvCore', s: 'look up command, check traces'};
   var DISP = {k: 'disp', t: 'Dispatch',   s: 'call the C function'};
@@ -222,10 +221,10 @@ li { margin-bottom: 4px; }
     return o;
   }
   var head = [
-    S(0, [], [], 'Executor is running',
+    S(0, [], [], 'Bytecode executor is running',
       'The proc body is bytecode, run by one big function (TEBCresume). Below it on the trampoline stack are the records of whatever called this proc. Nothing of ours is on the stack yet.'),
     S(1, [CMD], [], 'push',
-      'The command name goes on the value stack as a constant. No trampoline involvement: the executor just advances.'),
+      'The command name goes on the value stack as a constant. No trampoline involvement: the bytecode executor just advances.'),
     S(2, [CMD, '-5'], [], 'loadScalar x',
       'The variable x (value -5) is pushed as the argument. The next instruction calls the command with these two words.')
   ];
@@ -237,11 +236,11 @@ li { margin-bottom: 4px; }
   ];
   var stock = head.concat([
     S(2, [CMD, '-5'], [TEBC], 'invokeStk 2: save the place',
-      'The executor does not call a command directly, since a command might be a proc that needs its own bytecode frame. It records the pc, then writes a bookmark: one TEBCresume record goes on the trampoline stack, remembering where to resume. The executor is still the one running.',
-      {push: 1, running: 'executor'}),
+      'The bytecode executor does not call a command directly, since a command might be a proc that needs its own bytecode frame. It records the pc, then writes a bookmark: one TEBCresume record goes on the trampoline stack, remembering where to resume. The bytecode executor is still the one running.',
+      {push: 1, running: 'bytecode executor'}),
     S(2, [CMD, '-5'], [TEBC, NRC, EOC], 'Push two records, return to the trampoline',
-      'TclNREvalObjv pushes NRCommand (to run last) and EvalObjvCore (to run first). Then the executor function returns to the trampoline loop. This return is where control actually leaves the executor; the bytecode is now suspended.',
-      {push: 2, suspended: true, running: 'executor, returning'}),
+      'TclNREvalObjv pushes NRCommand (to run last) and EvalObjvCore (to run first). Then the bytecode executor function returns to the trampoline loop. This return is where control actually leaves the bytecode executor; the bytecode is now suspended.',
+      {push: 2, suspended: true, running: 'bytecode executor, returning'}),
     S(2, [CMD, '-5'], [TEBC, NRC, DISP], 'Pop EvalObjvCore',
       'The loop pops EvalObjvCore. It looks the command up by name, runs the trace and rewrite checks, and pushes a Dispatch record.',
       {push: 1, pop: 1, suspended: true, running: 'EvalObjvCore'}),
@@ -252,19 +251,19 @@ li { margin-bottom: 4px; }
       'After-command checks: decrement the level count, test for async handlers, cancellation and limits.',
       {pop: 1, suspended: true, running: 'NRCommand'}),
     S(3, ['5'], [], 'Pop TEBCresume: back in the bytecode',
-      'The executor is re-entered at the saved pc. It takes the result, drops the two argument words and pushes the result. The trampoline stack is empty again.',
-      {pop: 1, running: 'TEBCresume, executor again'})
+      'The bytecode executor is re-entered at the saved pc. It takes the result, drops the two argument words and pushes the result. The trampoline stack is empty again.',
+      {pop: 1, running: 'TEBCresume, bytecode executor again'})
   ]).concat(tail);
   var fast = head.concat([
     S(2, [CMD, '-5'], [], 'invokeStk 2: look up and check',
       'The prototype looks the command up and checks it is flagged as a fast leaf. It then runs the same guards the normal route would reach: traces, limits, cancellation, async handlers, rewrites. Any guard that fails falls back to the stock sequence. Nothing is pushed.',
-      {running: 'executor'}),
+      {running: 'bytecode executor'}),
     S(2, [CMD, '-5'], [], 'Call the C function directly',
-      'The executor calls the abs function itself, from inside the same instruction. No records, no return to the trampoline, no suspended bytecode.',
-      {running: 'executor, calls abs(-5)'}),
+      'The bytecode executor calls the abs function itself, from inside the same instruction. No records, no return to the trampoline, no suspended bytecode.',
+      {running: 'bytecode executor, calls abs(-5)'}),
     S(3, ['5'], [], 'Push the result and carry on',
       'The result replaces the two argument words. The prototype sets the interrupt counter so limit checks still run, then jumps straight back into the dispatch loop.',
-      {running: 'executor'})
+      {running: 'bytecode executor'})
   ]).concat(tail);
 
   var MODES = {stock: stock, fast: fast};
@@ -279,7 +278,7 @@ li { margin-bottom: 4px; }
     $('code').innerHTML = CODE.map(function (c, n) {
       return '<div class="' + (n === s.pc && !s.suspended ? 'on' : '') + '"><span class="n">' + n + '</span><span>' + c.replace(/</g, '&lt;') + '</span></div>';
     }).join('');
-    $('susp').textContent = s.suspended ? 'Suspended: the executor has returned to the trampoline.' : '';
+    $('susp').textContent = s.suspended ? 'Suspended: the bytecode executor has returned to the trampoline.' : '';
     $('vs').innerHTML = s.vs.length ? s.vs.map(function (v) { return '<div class="cell">' + v + '</div>'; }).join('')
       : '<div class="empty">empty</div>';
     var prev = i > 0 ? steps[i - 1].nr.length : 0;
@@ -316,5 +315,3 @@ li { margin-bottom: 4px; }
   render();
 })();
 </script>
-
-</body></html>
