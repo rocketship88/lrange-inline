@@ -50,6 +50,7 @@ code, .mono { font-family: var(--mono); font-size: .88em; }
 
 .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel); }
+@media (max-width: 560px) { .seg { flex-wrap: wrap; } }
 .seg button { border: 0; background: transparent; color: var(--fg); font: inherit; padding: 8px 14px; cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
 .ctl { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -134,7 +135,7 @@ li { margin-bottom: 4px; }
 
 <main>
   <header>
-    <p class="ver mono">Version 12 &middot; Oct 11, 2026</p>
+    <p class="ver mono">Version 13 &middot; Oct 11, 2026</p>
     <h1>Tcl Trampoline Stepper</h1>
     <p class="lede">Follow one math function call, <code>abs($x)</code> inside <code>expr</code> in a proc, through the bytecode executor. The compiler turns it into a call of the command <code>tcl::mathfunc::abs</code>. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
   </header>
@@ -145,6 +146,7 @@ li { margin-bottom: 4px; }
     <div class="seg" role="group" aria-label="Mode">
       <button id="m-stock" aria-pressed="true">Stock Tcl</button>
       <button id="m-fast" aria-pressed="false">Fast leaf</button>
+      <button id="m-fb" aria-pressed="false">Fast leaf, guard fails</button>
     </div>
     <div class="ctl">
       <button id="b-reset">Reset</button>
@@ -303,7 +305,7 @@ li { margin-bottom: 4px; }
   ]).concat(tail);
   var fast = head.concat([
     S(2, [CMD, '-5'], [], 'invokeStk 2: look up and check',
-      'The prototype looks the command up and checks it is flagged as a fast leaf. It then runs the same guards the normal route would reach: traces, limits, cancellation, async handlers, rewrites. Any guard that fails falls back to the stock sequence. Nothing is pushed.',
+      'The prototype looks the command up and checks it is flagged as a fast leaf. It then runs the same guards the normal route would reach: traces, limits, cancellation, async handlers, rewrites. If any guard fails, execution falls through to the same two lines stock Tcl runs (see the third mode). Nothing is pushed.',
       {running: 'bytecode executor'}),
     S(2, [CMD, '-5'], [], 'Call the C function directly',
       'The bytecode executor calls the abs function itself, from inside the same instruction. No records, no return to the trampoline, no suspended bytecode.',
@@ -313,11 +315,19 @@ li { margin-bottom: 4px; }
       {running: 'bytecode executor'})
   ]).concat(tail);
 
-  var MODES = {stock: stock, fast: fast};
+  var failStep = S(2, [CMD, '-5'], [], 'invokeStk 2: look up and check, a guard fails',
+    'The command is found and flagged as a fast leaf, but a guard says no. For example, an execution trace has been set on it. Nothing has been pushed and nothing has been called. Execution falls through to the same two lines stock Tcl runs next, and the command found here is passed along.',
+    {running: 'bytecode executor'});
+  var eocFb = S(2, [CMD, '-5'], [TEBC, NRC, DISP], 'Pop EvalObjvCore',
+    'EvalObjvCore was handed the command found earlier, so it skips the lookup. It runs the trace checks, where the trace that stopped the fast path now runs, and pushes a Dispatch record.',
+    {push: 1, pop: 1, suspended: true, running: 'EvalObjvCore'});
+  var fallback = stock.slice(0, 3).concat([failStep], stock.slice(3, 5), [eocFb], stock.slice(6));
+  var MODES = {stock: stock, fast: fast, fb: fallback};
   /* [instruction being described, 'done' or 'run'] for each step */
   var INFO = {
     stock: [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done'], [5, 'done']],
-    fast:  [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done'], [5, 'done']]
+    fast:  [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done'], [5, 'done']],
+    fb:    [[null], [0, 'done'], [1, 'done'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'run'], [2, 'done'], [3, 'done'], [4, 'done'], [5, 'done']]
   };
   var mode = 'stock', i = 0, timer = null;
   var $ = function (id) { return document.getElementById(id); };
@@ -329,13 +339,14 @@ li { margin-bottom: 4px; }
     var steps = MODES[mode], s = steps[i];
     var inf = INFO[mode][i], cur = inf[0], nxt = cur === null ? 0 : cur + 1;
     if (nxt >= CODE.length) nxt = null;
+    var hl = (cur !== null && inf[1] === 'run') ? cur : (nxt !== null ? nxt : cur);
     $('code').innerHTML = CODE.map(function (c, n) {
-      return '<div class="' + (n === cur ? 'on' : n === nxt ? 'next' : '') + '"><span class="n">' + n + '</span><span>' + c.replace(/</g, '&lt;') + '</span></div>';
+      return '<div class="' + (n === hl ? 'on' : '') + '"><span class="n">' + n + '</span><span>' + c.replace(/</g, '&lt;') + '</span></div>';
     }).join('');
     var yset = cur !== null && (cur > 4 || (cur === 4 && inf[1] === 'done'));
     $('vars').innerHTML = '<div class="var"><small>x (%v0)</small>-5</div><div class="var' + (yset ? ' set' : ' undef') + (cur === 4 && inf[1] === 'done' ? ' fresh2' : '') + '"><small>y (%v1)</small>' + (yset ? '5' : 'undefined') + '</div>';
     $('cap-top').textContent = cur === null ? 'Before the first instruction'
-      : 'Instruction ' + cur + ': ' + CODE[cur] + (inf[1] === 'run' ? '  (in progress)' : '');
+      : (inf[1] === 'run' ? 'Running instruction ' : 'Just ran instruction ') + cur + ': ' + CODE[cur];
     $('cap-next').textContent = nxt === null ? 'Next instruction: none, the proc returns its result'
       : 'Next instruction: (' + nxt + ') ' + CODE[nxt];
     $('susp').textContent = s.suspended ? 'Yielded: the bytecode executor has handed control to the trampoline.' : '';
@@ -356,12 +367,14 @@ li { margin-bottom: 4px; }
     $('b-next').disabled = i === steps.length - 1;
     $('m-stock').setAttribute('aria-pressed', mode === 'stock');
     $('m-fast').setAttribute('aria-pressed', mode === 'fast');
+    $('m-fb').setAttribute('aria-pressed', mode === 'fb');
     if (i === steps.length - 1) stop();
   }
   function stop() { if (timer) { clearInterval(timer); timer = null; $('b-play').textContent = 'Auto-play'; } }
   function setMode(m) { stop(); mode = m; i = 0; render(); }
   $('m-stock').onclick = function () { setMode('stock'); };
   $('m-fast').onclick = function () { setMode('fast'); };
+  $('m-fb').onclick = function () { setMode('fb'); };
   $('b-next').onclick = function () { stop(); if (i < MODES[mode].length - 1) { i++; render(); } };
   $('b-prev').onclick = function () { stop(); if (i > 0) { i--; render(); } };
   $('b-reset').onclick = function () { stop(); i = 0; render(); };
