@@ -123,7 +123,7 @@ li { margin-bottom: 4px; }
 
 <main>
   <header>
-    <p class="ver mono">Version 6 &middot; Oct 11, 2026</p>
+    <p class="ver mono">Version 7 &middot; Oct 11, 2026</p>
     <h1>Tcl Trampoline Stepper</h1>
     <p class="lede">Follow one command call, <code>tcl::mathfunc::abs $x</code> inside a proc, through the bytecode executor. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
   </header>
@@ -186,8 +186,9 @@ li { margin-bottom: 4px; }
       <p class="fine" style="margin-top:8px">Opcodes such as <code>push</code>, <code>loadScalar</code>, <code>storeScalar</code>, <code>add</code>, jumps and the inlined <code>lrange</code> never touch it. The prototype changes only <code>invokeStk</code>.</p>
     </section>
     <section>
-      <h2>What a record is</h2>
-      <p>The stack holds callback records, not instructions. Each record is a function pointer plus four data words (<code>NRE_callback</code>). The trampoline loop in <code>TclNRRunCallbacks</code> pops the top record, calls its function, and repeats until the stack is back to where it started.</p>
+      <h2>What a trampoline record is</h2>
+      <p>A trampoline record is one item on the trampoline stack: a function pointer plus four data words (<code>NRE_callback</code> in the source).</p>
+      <p>The trampoline stack holds these callback records, not instructions. The loop in <code>TclNRRunCallbacks</code> pops the top record, calls its function, and repeats until the stack is back to where it started.</p>
       <ul>
         <li><b>TEBCresume</b> saves the bytecode executor: its data block, the pc to resume at, and the cleanup count.</li>
         <li><b>NRCommand</b> runs after the command: level count, async, cancel and limit checks.</li>
