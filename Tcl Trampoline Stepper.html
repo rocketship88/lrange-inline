@@ -113,10 +113,14 @@ th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: u
 ul { margin: 6px 0 0; padding-left: 1.2em; }
 li { margin-bottom: 4px; }
 .fine { color: var(--muted); font-size: .85rem; }
+.ver { color: var(--muted); margin: 0 0 6px; font-size: .8rem; }
+.about { border-top: 1px solid var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 8px; color: var(--muted); font-size: .9rem; max-width: 80ch; }
+.about h2 { color: var(--fg); margin: 0; }
 </style>
 
 <main>
   <header>
+    <p class="ver mono">Version 3 &middot; Oct 11, 2026</p>
     <h1>Tcl Trampoline Stepper</h1>
     <p class="lede">Follow one command call, <code>tcl::mathfunc::abs $x</code> inside a proc, through the bytecode executor. Switch between stock Tcl and the fast-leaf prototype to see which records each one puts on the trampoline stack.</p>
   </header>
@@ -166,7 +170,7 @@ li { margin-bottom: 4px; }
       <p class="fine">Found by searching <code>tclExecute.c</code> for the yield macro. Seven opcode handlers return to the trampoline; everything else runs straight through inside the executor.</p>
       <div class="tbl"><table>
         <tr><th>Opcode</th><th>What it does</th></tr>
-        <tr><td><code>invokeStk1</code> / <code>invokeStk</code></td><td>Call a command by words on the stack</td></tr>
+        <tr><td><code>invokeStk</code> (and the deprecated <code>invokeStk1</code>)</td><td>Call a command by words on the stack</td></tr>
         <tr><td><code>invokeReplace</code></td><td>Same, with a replaced command word</td></tr>
         <tr><td><code>evalStk</code></td><td><code>eval</code> of a script value</td></tr>
         <tr><td><code>exprStk</code></td><td><code>expr</code> of a non-constant expression</td></tr>
@@ -188,16 +192,21 @@ li { margin-bottom: 4px; }
       <p class="fine" style="margin-top:8px">Simplified: cross-checks such as traces, limits, rewrites and deferred callbacks are collapsed into one line each. The order of pushes and pops follows <code>tclBasic.c</code> and <code>tclExecute.c</code>.</p>
     </section>
   </div>
+
+  <section class="about">
+    <h2>About this page</h2>
+    <p>Written by Claude (an AI) for ET, from reading the Tcl trunk source (<code>tclExecute.c</code>, <code>tclBasic.c</code>, <code>doc/NRE.3</code>) and disassembling a real proc. It is a teaching model of one command call, not a trace of a running interpreter, and the guard checks are collapsed into single steps. It shows record counts only, not timings.</p>
+    <p>The fast-leaf prototype it illustrates is on ET's GitHub and is not in Fossil. Nobody on the core team has reviewed this page yet. Corrections are welcome; the version line at the top says which copy you are reading.</p>
+  </section>
 </main>
 
 <script>
 (function () {
   var CODE = [
-    'push1 "tcl::mathfunc::abs"',
-    'loadScalar1 x',
-    'invokeStk1 2',
-    'storeScalar1 y',
-    'pop',
+    'push "tcl::mathfunc::abs"',
+    'loadScalar x',
+    'invokeStk 2',
+    'storeScalar y',
     'done'
   ];
   var BASE = {k: 'base', t: "caller's records", s: 'below, untouched'};
@@ -215,23 +224,23 @@ li { margin-bottom: 4px; }
   var head = [
     S(0, [], [], 'Executor is running',
       'The proc body is bytecode, run by one big function (TEBCresume). Below it on the trampoline stack are the records of whatever called this proc. Nothing of ours is on the stack yet.'),
-    S(1, [CMD], [], 'push1',
+    S(1, [CMD], [], 'push',
       'The command name goes on the value stack as a constant. No trampoline involvement: the executor just advances.'),
-    S(2, [CMD, '-5'], [], 'loadScalar1 x',
+    S(2, [CMD, '-5'], [], 'loadScalar x',
       'The variable x (value -5) is pushed as the argument. The next instruction calls the command with these two words.')
   ];
   var tail = [
-    S(4, ['5'], [], 'storeScalar1 y',
+    S(4, ['5'], [], 'storeScalar y',
       'y is set to 5. The value stays on the stack, as it does for every store.'),
-    S(5, [], [], 'pop and done',
-      'The leftover value is discarded and the proc continues. Same end state in both modes.')
+    S(4, [], [], 'done',
+      'The proc returns the top of the stack as its result. Same end state in both modes.')
   ];
   var stock = head.concat([
-    S(2, [CMD, '-5'], [TEBC], 'invokeStk1: yield',
-      'The executor cannot call a command directly, since a command might be a proc that needs its own bytecode frame. So it saves itself: one TEBCresume record goes on the trampoline stack, remembering the pc.',
+    S(2, [CMD, '-5'], [TEBC], 'invokeStk 2: save the place',
+      'The executor does not call a command directly, since a command might be a proc that needs its own bytecode frame. It records the pc, then writes a bookmark: one TEBCresume record goes on the trampoline stack, remembering where to resume. The executor is still the one running.',
       {push: 1, running: 'executor'}),
-    S(2, [CMD, '-5'], [TEBC, NRC, EOC], 'TclNREvalObjv schedules the call',
-      'Two more records are pushed: NRCommand (to run last) and EvalObjvCore (to run first). Then the executor function returns to the trampoline loop. The bytecode is now suspended.',
+    S(2, [CMD, '-5'], [TEBC, NRC, EOC], 'Push two records, return to the trampoline',
+      'TclNREvalObjv pushes NRCommand (to run last) and EvalObjvCore (to run first). Then the executor function returns to the trampoline loop. This return is where control actually leaves the executor; the bytecode is now suspended.',
       {push: 2, suspended: true, running: 'executor, returning'}),
     S(2, [CMD, '-5'], [TEBC, NRC, DISP], 'Pop EvalObjvCore',
       'The loop pops EvalObjvCore. It looks the command up by name, runs the trace and rewrite checks, and pushes a Dispatch record.',
@@ -247,7 +256,7 @@ li { margin-bottom: 4px; }
       {pop: 1, running: 'TEBCresume, executor again'})
   ]).concat(tail);
   var fast = head.concat([
-    S(2, [CMD, '-5'], [], 'invokeStk1: look up and check',
+    S(2, [CMD, '-5'], [], 'invokeStk 2: look up and check',
       'The prototype looks the command up and checks it is flagged as a fast leaf. It then runs the same guards the normal route would reach: traces, limits, cancellation, async handlers, rewrites. Any guard that fails falls back to the stock sequence. Nothing is pushed.',
       {running: 'executor'}),
     S(2, [CMD, '-5'], [], 'Call the C function directly',
